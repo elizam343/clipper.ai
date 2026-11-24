@@ -110,7 +110,10 @@ def first_paragraph(desc: str) -> str:
     """The creator's own summary: the first paragraph of the description, minus links and promos."""
     for para in re.split(r"\n\s*\n", desc):
         lines = [l.strip() for l in para.splitlines()
-                 if l.strip() and not re.search(r"https?://|www\.|►|@\w|subscribe|follow me", l, re.I)]
+                 if l.strip() and not re.search(r"https?://|www\.|►|@\w|subscribe|follow me|"
+                                                r"compensation|sponsor|promotional|paid promotion|"
+                                                r"affiliate|use code|discount|comments?\b|spam|thanks (everyone|for watching)", l, re.I)
+                 and not re.match(r"^[\w '&-]{1,25}:", l.strip())]  # "Outro Song: ...", "Game Link: ..."
         text = " ".join(lines).strip()
         if len(text) >= 15:
             return text[:300]
@@ -520,10 +523,27 @@ def basic_caption(clip: Clip, meta: dict) -> dict:
     tags = ["#shorts"]
     if meta.get("creator"):
         tags.append(_tag(meta["creator"]))
-    for w in (rep + tw)[:3]:
+    topic = topic_tag(meta)
+    if topic:
+        tags.append(_tag(topic))
+        tw = [w for w in tw if w not in topic.lower()]
+        rep = [w for w in rep if w not in topic.lower()]
+    filler = {"funny", "moments", "gameplay", "part", "episode", "full", "video"}
+    tw = [w for w in tw if w not in filler]
+    rep = [w for w in rep if w not in filler]
+    for w in list(dict.fromkeys(rep + tw))[:3 if not topic else 2]:
         tags.append(_tag(w))
     return dict(title=title, caption=caption, hashtags=list(dict.fromkeys(tags)),
                 tags=youtube_tags(clip, meta), source="basic")
+
+
+def topic_tag(meta: dict) -> str:
+    """The game or topic name: the source video's shortest multi-word tag that appears
+    word for word at the start of its title ("Dead Rising 3"), if there is one."""
+    title = re.sub(r"[^a-z0-9 ]", "", (meta.get("title") or "").lower())
+    hits = [s for s in meta.get("tags") or []
+            if len(s.split()) >= 2 and title.startswith(re.sub(r"[^a-z0-9 ]", "", s.lower()))]
+    return min(hits, key=len) if hits else ""
 
 
 # tags that describe a full video, not a clip from it
@@ -570,10 +590,13 @@ def youtube_tags(clip: Clip, meta: dict, first=()) -> list:
     chw = tok(ch) - common - {"part"} if ch else set()
     near = [s for s in src if not fit(s) and chw & tok(s)]
     # broad tags about the whole video: its title words or the game/topic every tag shares
-    titlew = tok(meta.get("title") or "") - common
-    broad = [s for s in src if (tok(s) & titlew or tok(s) & common) and not fit(s)
-             and not (chw and tok(s) & {w for c in meta.get("chapters") or []
-                                        for w in tok(c["title"]) - common} - chw)]
+    titlew = set(re.findall(r"[a-z0-9]+", (meta.get("title") or "").lower())) - STOP
+    other_ch = {w for c in meta.get("chapters") or [] for w in tok(c["title"]) - common} - chw
+    broad = [s for s in src if not fit(s) and not (chw and tok(s) & other_ch)
+             and not re.search(r"walkthrough|trailer|dlc", s, re.I)]
+    sw = lambda s: set(re.findall(r"[a-z0-9]+", s.lower()))
+    # most title words matched first ("Dead Rising 3 Funny Moments"), then the shorter tag
+    broad.sort(key=lambda s: (-len(sw(s) & titlew), -(len(sw(s) & titlew) / max(len(sw(s)), 1)), len(s)))
     tags = list(first)
     if who:
         tags += [who, f"{who} funny moments", f"{who} shorts"]
@@ -611,6 +634,8 @@ def basic_description(clip: Clip, meta: dict, sents, hook: str, title: str) -> s
             words.pop()
         quote = " ".join(words).rstrip(",") + ("…" if cut < len(sents[0].split()) else "")
     else:
+        quote = ""
+    if quote and same(quote.rstrip("…")):
         quote = ""
     if quote:
         quote = quote[0].upper() + quote[1:]
