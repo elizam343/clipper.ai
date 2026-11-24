@@ -50,7 +50,7 @@ python clipper.py gameplay.mp4 --layout screen
 export ANTHROPIC_API_KEY=sk-ant-...
 python clipper.py podcast.mp4 --llm
 
-# keep the whole 16:9 frame (the joke needs both sides of the screen)
+# keep the whole frame inside the Short (the joke needs both sides of the screen)
 python clipper.py "https://www.youtube.com/watch?v=..." --format landscape
 
 # render every clip both ways and decide later
@@ -66,19 +66,21 @@ If you run clipper in a terminal without `--format`, it asks you first:
 ```
 Where is the funny part of these clips?
   1) portrait   - one person/face; crop to vertical 9:16 (Shorts/TikTok/Reels)
-  2) landscape  - the joke needs the whole frame; keep 16:9, no crop
+  2) landscape  - the joke needs the whole frame; keep all of it inside the 9:16 Short,
+                  with black bars above and below
   3) both       - render each clip both ways and pick later
 Choose 1/2/3 [1]:
 ```
 
 In scripts or other non-interactive runs it uses portrait without asking. Portrait
-clips use the layouts below. Landscape clips are 1920×1080 with nothing cropped
-(letterboxed if the source isn't 16:9) and end in ` (landscape).mp4`.
+clips use the layouts below. Landscape clips are also vertical 1080×1920 Shorts, but
+with nothing cropped: the whole frame sits in the middle with black bars above and
+below. Their files end in ` (landscape).mp4`.
 
 ### Post captions (`--captions auto|basic|off`)
 
-Every clip gets a caption you can paste when you post it: a title, one or two
-sentences, and hashtags. **The clip's file is named after its title**, numbered in
+Every clip gets a caption you can paste when you post it: a title, a description,
+and hashtags. **The clip's file is named after its title**, numbered in
 the order the clips appear in the video (`04 - God what are we doing.mp4`). The
 caption is saved as a `.txt` with the same name and in `clips.json`.
 
@@ -86,14 +88,21 @@ caption is saved as a `.txt` with the same name and in `clips.json`.
   request. Needs `pip install anthropic` and an API key
   (`export ANTHROPIC_API_KEY=sk-ant-...`). Without them, clipper falls back to basic.
 - **basic**: offline. The title is the clip's punchiest short line (exclamations and
-  questions first), the hook is its first full sentence, and hashtags come from the
-  creator, the video title, and words the clip repeats.
+  questions first). The description quotes the clip's best other line, says which part
+  of the video it's from (using YouTube chapters when the video has them) and credits
+  the creator with a link to the full video. Hashtags come from the creator, the video
+  title, and words the clip repeats.
+
+Claude also gets the creator's own summary of the video and each clip's chapter, so its
+descriptions say what's happening, not just what was said.
 - **off**: no captions. Files are named `clip_01_12m34s.mp4` instead.
 
 ```
 God what are we doing?
 
-I'm drilling in a circle.
+“I'm drilling a hole right into your head That's disgusting.”
+Ear Surgery, from jacksepticeye's “OPERATE ON BILLY! | Tonsil, Ear and Heart Surgery”.
+Full video: https://www.youtube.com/watch?v=zFk_JjsTMKc
 
 #shorts #jacksepticeye #drilling #operate #billy
 ```

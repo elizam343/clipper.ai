@@ -78,7 +78,10 @@ def ingest(src: str, workdir: Path, want_chat: bool):
             d = j.get("upload_date") or ""
             meta = dict(title=j.get("title"), creator=j.get("channel") or j.get("uploader"),
                         date=f"{d[:4]}-{d[4:6]}-{d[6:]}" if len(d) == 8 else None,
-                        url=j.get("webpage_url") or src, id=j.get("id"))
+                        url=j.get("webpage_url") or src, id=j.get("id"),
+                        summary=first_paragraph(j.get("description") or ""),
+                        chapters=[dict(start=c.get("start_time", 0), end=c.get("end_time"),
+                                       title=c.get("title", "")) for c in j.get("chapters") or []])
         chat = None
         if want_chat and "youtu" in src:
             log("fetching chat replay (if the video has one)")
@@ -99,6 +102,17 @@ def ingest(src: str, workdir: Path, want_chat: bool):
                 chat = cand
                 break
     return p, chat, local_meta(p)
+
+
+def first_paragraph(desc: str) -> str:
+    """The creator's own summary: the first paragraph of the description, minus links and promos."""
+    for para in re.split(r"\n\s*\n", desc):
+        lines = [l.strip() for l in para.splitlines()
+                 if l.strip() and not re.search(r"https?://|www\.|►|@\w|subscribe|follow me", l, re.I)]
+        text = " ".join(lines).strip()
+        if len(text) >= 15:
+            return text[:300]
+    return ""
 
 
 def local_meta(p: Path) -> dict:
@@ -495,8 +509,7 @@ def basic_caption(clip: Clip, meta: dict) -> dict:
         title = title[0].upper() + title[1:]
     else:
         title = re.sub(r"\s*[|•-]\s*.*$", "", meta.get("title") or "").strip() or hook[:60]
-    if hook.rstrip(".") == title and len(full) > 1:
-        hook = full[1] if len(full[1]) <= 100 else full[1][:97].rsplit(" ", 1)[0] + "..."
+    caption = basic_description(clip, meta, sents, hook, title)
     # hashtags: words from the title, then words the clip keeps repeating
     tw = [w.lower() for w in re.findall(r"[A-Za-z]{4,}", meta.get("title") or "")
           if w.lower() not in STOP]
@@ -507,8 +520,54 @@ def basic_caption(clip: Clip, meta: dict) -> dict:
         tags.append(_tag(meta["creator"]))
     for w in (rep + tw)[:3]:
         tags.append(_tag(w))
-    return dict(title=title, caption=hook or title, hashtags=list(dict.fromkeys(tags)),
+    return dict(title=title, caption=caption, hashtags=list(dict.fromkeys(tags)),
                 source="basic")
+
+
+def chapter_at(meta: dict, t: float) -> str:
+    for ch in meta.get("chapters") or []:
+        if ch["start"] <= t < (ch["end"] if ch["end"] is not None else 1e12):
+            return ch["title"]
+    return ""
+
+
+def basic_description(clip: Clip, meta: dict, sents, hook: str, title: str) -> str:
+    """Offline post description: the clip's best quote, what part of the video it's from,
+    and a link back to the full video."""
+    same = lambda s: re.sub(r"\W", "", s.lower()) == re.sub(r"\W", "", title.lower())
+    # quote: a quotable line other than the title, exclamations and questions first
+    cands = [s for s in sents if 4 <= len(s.split()) <= 18 and len(s) <= 110
+             and s[0].isalpha() and not same(s)]
+    cands.sort(key=lambda s: (s[-1] not in "!?", abs(len(s.split()) - 10)))
+    if cands:
+        quote = cands[0]
+    elif sents:
+        # only run-on transcript lines: cut the first one at a natural break, not mid-phrase
+        words = sents[0].rstrip(".").split()
+        cut = next((i for i, w in enumerate(words) if i >= 6 and
+                    w.lower().strip(",") in ("anyway", "and", "so", "but", "cuz", "because")),
+                   min(len(words), 14))
+        words = words[:cut]
+        while len(words) > 4 and words[-1].lower().strip(",") in STOP:
+            words.pop()
+        quote = " ".join(words).rstrip(",") + ("…" if cut < len(sents[0].split()) else "")
+    else:
+        quote = ""
+    if quote:
+        quote = quote[0].upper() + quote[1:]
+    vt = (meta.get("title") or "").strip()
+    who = meta.get("creator")
+    src = (f"{who}'s “{vt}”" if who and vt else f"“{vt}”" if vt else who or "")
+    ch = chapter_at(meta, (clip.start + clip.end) / 2)
+    context = (f"{ch}, from {src}." if ch and src else f"From {src}." if src else "")
+    lines = []
+    if quote:
+        lines.append(f"“{quote}”")
+    if context:
+        lines.append(context)
+    if meta.get("url"):
+        lines.append(f"Full video: {meta['url']}")
+    return "\n".join(lines) or title
 
 
 def claude_captions(clips, meta: dict):
@@ -518,16 +577,20 @@ def claude_captions(clips, meta: dict):
     except ImportError:
         log("captions: 'anthropic' not installed (pip install anthropic); using basic captions")
         return None
-    items = [dict(id=i, seconds=round(c.end - c.start), transcript=c.text[:1500])
+    items = [dict(id=i, seconds=round(c.end - c.start), transcript=c.text[:1500],
+                  **({"chapter": ch} if (ch := chapter_at(meta, (c.start + c.end) / 2)) else {}))
              for i, c in enumerate(clips)]
     prompt = (
         "These are clips cut from one video to post as YouTube Shorts / TikToks / Reels.\n"
         f"Video title: {meta.get('title') or 'unknown'}\n"
-        f"Creator: {meta.get('creator') or 'unknown'}\n\n"
-        "For each clip write a post caption based on what actually happens in its transcript:\n"
-        "- title: a short, punchy title, at most 60 characters\n"
-        "- caption: one or two sentences that make people want to watch, at most 150 "
-        "characters, in the creator's tone; no hashtags in this field\n"
+        f"Creator: {meta.get('creator') or 'unknown'}\n"
+        + (f"Creator's summary of the video: {meta['summary']}\n" if meta.get("summary") else "")
+        + "\nFor each clip write a post caption based on what actually happens in its transcript "
+        "(the chapter, when given, says which part of the video it's from):\n"
+        "- title: a short, punchy title, at most 60 characters; it is also the clip's file name\n"
+        "- caption: the post description. One or two sentences, at most 200 characters, that "
+        "say what happens and make people want to watch, in the creator's tone. Quoting the "
+        "best line is fine. No hashtags or links in this field\n"
         "- hashtags: 3 to 6 relevant hashtags, each starting with #\n"
         "Don't invent events that aren't in the transcript.\n\n" + json.dumps(items))
     schema = {
@@ -570,7 +633,10 @@ def claude_captions(clips, meta: dict):
             out.append(basic_caption(c, meta))
             continue
         tags = [t if t.startswith("#") else "#" + t for t in d["hashtags"]]
-        out.append(dict(title=d["title"], caption=d["caption"], hashtags=tags, source="claude"))
+        cap = d["caption"].strip()
+        if meta.get("url"):
+            cap += f"\nFull video: {meta['url']}"
+        out.append(dict(title=d["title"], caption=cap, hashtags=tags, source="claude"))
     return out
 
 
@@ -941,7 +1007,8 @@ def ask_format() -> str:
     """Ask which orientation to render. Only called when stdin is a terminal."""
     print("\nWhere is the funny part of these clips?\n"
           "  1) portrait   - one person/face; crop to vertical 9:16 (Shorts/TikTok/Reels)\n"
-          "  2) landscape  - the joke needs the whole frame; keep 16:9, no crop\n"
+          "  2) landscape  - the joke needs the whole frame; keep all of it inside the 9:16 Short,\n"
+          "                  with black bars above and below\n"
           "  3) both       - render each clip both ways and pick later",
           file=sys.stderr)
     choices = {"1": "portrait", "2": "landscape", "3": "both",
@@ -981,10 +1048,11 @@ def main():
     ap.add_argument("--start", type=float, default=0, help="only look after this time (s)")
     ap.add_argument("--end", type=float, default=None, help="only look before this time (s)")
     ap.add_argument("--format", choices=["portrait", "landscape", "both"], default=None,
-                    help="portrait: 9:16 crop; landscape: full 16:9 frame; both: render each "
+                    help="portrait: 9:16 crop; landscape: whole frame inside the 9:16 Short with black bars; "
+                         "both: render each "
                          "clip twice (default: ask when run in a terminal, else portrait)")
     ap.add_argument("--size", default="1080x1920", help="portrait output size WxH "
-                    "(landscape uses the same size turned sideways, e.g. 1920x1080)")
+                    "(landscape clips use the same size, letterboxed)")
     ap.add_argument("--crf", type=int, default=20, help="x264 quality (lower = better)")
     ap.add_argument("--analyze-only", action="store_true", help="write clips.json, don't render")
     ap.add_argument("--captions", choices=["auto", "basic", "off"], default="auto",
@@ -1001,7 +1069,6 @@ def main():
     work = base / ".work"
     work.mkdir(parents=True, exist_ok=True)
     W, H = (int(v) for v in a.size.lower().split("x"))
-    LW, LH = max(W, H), min(W, H)
 
     src, chat_file, meta = ingest(a.input, work, want_chat=not a.no_chat and not a.chat)
     # every video gets its own folder: "<title> - <creator> - <upload date>"
@@ -1089,7 +1156,7 @@ def main():
             write_caption_file(out / f"{stem}.txt", c.caption)
         if landscape and not a.analyze_only:
             log(f"rendering {lname} ({c.end - c.start:.0f}s, landscape, score {c.score:.2f})")
-            render_landscape(src, c, info, out / lname, LW, LH, a.crf)
+            render_landscape(src, c, info, out / lname, W, H, a.crf)
         if not portrait:
             c.layout = "landscape"
             continue
