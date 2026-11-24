@@ -73,27 +73,29 @@ Choose 1/2/3 [1]:
 
 In scripts or other non-interactive runs it uses portrait without asking. Portrait
 clips use the layouts below. Landscape clips are 1920×1080 with nothing cropped
-(letterboxed if the source isn't 16:9) and end in `_landscape.mp4`.
+(letterboxed if the source isn't 16:9) and end in ` (landscape).mp4`.
 
 ### Post captions (`--captions auto|basic|off`)
 
 Every clip gets a caption you can paste when you post it: a title, one or two
-sentences, and hashtags. It's saved as a `.txt` next to the clip
-(`clip_01_00m19s.txt`) and in `clips.json`.
+sentences, and hashtags. **The clip's file is named after its title**, numbered in
+the order the clips appear in the video (`04 - God what are we doing.mp4`). The
+caption is saved as a `.txt` with the same name and in `clips.json`.
 
 - **auto** (default): Claude writes the captions from each clip's transcript in one
   request. Needs `pip install anthropic` and an API key
   (`export ANTHROPIC_API_KEY=sk-ant-...`). Without them, clipper falls back to basic.
-- **basic**: offline. Uses the video title, the clip's first full sentence as the hook,
-  and hashtags from the creator, the title, and words the clip repeats.
-- **off**: no captions.
+- **basic**: offline. The title is the clip's punchiest short line (exclamations and
+  questions first), the hook is its first full sentence, and hashtags come from the
+  creator, the video title, and words the clip repeats.
+- **off**: no captions. Files are named `clip_01_12m34s.mp4` instead.
 
 ```
-OPERATE ON BILLY!
+God what are we doing?
 
-It sucks all the shit out of your neck.
+I'm drilling in a circle.
 
-#shorts #jacksepticeye #operate #billy #tonsil
+#shorts #jacksepticeye #drilling #operate #billy
 ```
 
 ### Chat
@@ -137,8 +139,9 @@ and upload date:
 ```
 clips/
   OPERATE ON BILLY! Tonsil, Ear and Heart Surgery - jacksepticeye - 2015-03-05/
-    clip_01_00m21s.mp4
-    clip_01_00m21s_landscape.mp4     (with --format landscape or both)
+    04 - God what are we doing.mp4
+    04 - God what are we doing (landscape).mp4    (with --format landscape or both)
+    04 - God what are we doing.txt                (post caption)
     clips.json
   .work/                             (downloaded videos, reused on re-runs)
 ```

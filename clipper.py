@@ -480,7 +480,23 @@ def basic_caption(clip: Clip, meta: dict) -> dict:
     hook = (full or sents or [""])[0]
     if len(hook) > 100:
         hook = hook[:97].rsplit(" ", 1)[0] + "..."
-    title = re.sub(r"\s*[|•-]\s*.*$", "", meta.get("title") or "").strip() or hook[:60]
+    # title: the clip's punchiest short line (exclamations and questions first), so every
+    # clip gets its own title; fall back to the video title when there's no transcript
+    short = [s for s in sents if 3 <= len(s.split()) <= 9 and len(s) <= 60 and s[0].isalpha()]
+    short.sort(key=lambda s: (s[-1] not in "!?", -len(s.split())))
+    if short:
+        title = short[0].rstrip(".")
+        title = title[0].upper() + title[1:]
+    elif hook:  # one long run-on line: use its opening words, not ending on a filler word
+        words = hook.rstrip(".").split()[:7]
+        while len(words) > 3 and words[-1].lower().strip(",") in STOP:
+            words.pop()
+        title = " ".join(words).rstrip(",")
+        title = title[0].upper() + title[1:]
+    else:
+        title = re.sub(r"\s*[|•-]\s*.*$", "", meta.get("title") or "").strip() or hook[:60]
+    if hook.rstrip(".") == title and len(full) > 1:
+        hook = full[1] if len(full[1]) <= 100 else full[1][:97].rsplit(" ", 1)[0] + "..."
     # hashtags: words from the title, then words the clip keeps repeating
     tw = [w.lower() for w in re.findall(r"[A-Za-z]{4,}", meta.get("title") or "")
           if w.lower() not in STOP]
@@ -558,16 +574,30 @@ def claude_captions(clips, meta: dict):
     return out
 
 
-def write_captions(clips, meta: dict, out: Path, use_claude: bool):
+def make_captions(clips, meta: dict, use_claude: bool):
+    """Attach a caption (title, text, hashtags) to every clip."""
     caps = claude_captions(clips, meta) if use_claude else None
     if caps is None:
         caps = [basic_caption(c, meta) for c in clips]
     for c, cap in zip(clips, caps):
         c.caption = cap
-        stem = Path(c.file).stem.removesuffix("_landscape")
-        (out / f"{stem}.txt").write_text(
-            f"{cap['title']}\n\n{cap['caption']}\n\n{' '.join(cap['hashtags'])}\n")
-    log(f"captions: wrote {len(clips)} ({caps[0]['source'] if caps else 'none'})")
+    log(f"captions: {len(clips)} written ({caps[0]['source'] if caps else 'none'})")
+
+
+def clip_stem(k: int, c: Clip) -> str:
+    """'01 - <caption title>' when the clip has a caption, else 'clip_01_12m34s'."""
+    title = (c.caption or {}).get("title") or ""
+    title = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "", title)
+    title = re.sub(r"\s+", " ", title).strip(" .#")
+    if not title:
+        return f"clip_{k:02d}_{int(c.start // 60):02d}m{int(c.start % 60):02d}s"
+    if len(title) > 80:
+        title = title[:80].rsplit(" ", 1)[0].rstrip(" .,")
+    return f"{k:02d} - {title}"
+
+
+def write_caption_file(path: Path, cap: dict):
+    path.write_text(f"{cap['title']}\n\n{cap['caption']}\n\n{' '.join(cap['hashtags'])}\n")
 
 
 # --------------------------------------------------------------------------- LLM re-rank
@@ -1040,15 +1070,23 @@ def main():
     clips = sorted(pool, key=lambda c: -c.score)[: a.count]
     clips.sort(key=lambda c: c.start)
 
+    # captions first: each clip's file is named after its caption title
+    if a.captions != "off" and clips:
+        if not any(c.text for c in clips):
+            log("captions: no transcript, so captions are based on the video title only")
+        make_captions(clips, meta, use_claude=a.captions == "auto")
+
     # 3) frame + render
     detector = None
     vertical_src = info["width"] / info["height"] <= 0.75
     for k, c in enumerate(clips, 1):
-        stem = f"clip_{k:02d}_{int(c.start // 60):02d}m{int(c.start % 60):02d}s"
+        stem = clip_stem(k, c)
         name = f"{stem}.mp4"
-        lname = f"{stem}_landscape.mp4"
+        lname = f"{stem} (landscape).mp4" if c.caption else f"{stem}_landscape.mp4"
         c.files = ([name] if portrait else []) + ([lname] if landscape else [])
         c.file = c.files[0]
+        if c.caption:
+            write_caption_file(out / f"{stem}.txt", c.caption)
         if landscape and not a.analyze_only:
             log(f"rendering {lname} ({c.end - c.start:.0f}s, landscape, score {c.score:.2f})")
             render_landscape(src, c, info, out / lname, LW, LH, a.crf)
@@ -1073,11 +1111,6 @@ def main():
             render_screen(src, c, info, data, out / name, W, H, a.crf)
         else:
             render_blur(src, c, info, out / name, W, H, a.crf)
-
-    if a.captions != "off" and clips:
-        if not any(c.text for c in clips):
-            log("captions: no transcript, so captions are based on the video title only")
-        write_captions(clips, meta, out, use_claude=a.captions == "auto")
 
     report = dict(source=str(src), video=meta, chat=str(chat_file) if chat_file else None,
                   settings=vars(a), clips=[{**asdict(c), "score": round(c.score, 4)} for c in clips])
