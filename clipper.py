@@ -80,6 +80,8 @@ def ingest(src: str, workdir: Path, want_chat: bool):
                         date=f"{d[:4]}-{d[4:6]}-{d[6:]}" if len(d) == 8 else None,
                         url=j.get("webpage_url") or src, id=j.get("id"),
                         summary=first_paragraph(j.get("description") or ""),
+                        handle=j.get("uploader_id") if str(j.get("uploader_id", "")).startswith("@") else None,
+                        tags=[str(x) for x in j.get("tags") or []],
                         chapters=[dict(start=c.get("start_time", 0), end=c.get("end_time"),
                                        title=c.get("title", "")) for c in j.get("chapters") or []])
         chat = None
@@ -521,7 +523,64 @@ def basic_caption(clip: Clip, meta: dict) -> dict:
     for w in (rep + tw)[:3]:
         tags.append(_tag(w))
     return dict(title=title, caption=caption, hashtags=list(dict.fromkeys(tags)),
-                source="basic")
+                tags=youtube_tags(clip, meta), source="basic")
+
+
+# tags that describe a full video, not a clip from it
+GENERIC_TAGS = {"walkthrough", "playthrough", "playthrough part", "complete", "full", "ending",
+                "gameplay", "game", "part", "webcam", "facecam", "let's play", "lets play",
+                "full game", "no commentary", "episode", "series", "full video", "longplay"}
+
+
+def tag_budget(tags, limit=450):
+    """Dedupe and keep tags in order until YouTube's 500-character tag box would overflow
+    (a tag with spaces counts its quotes, plus a comma between tags)."""
+    out, seen, used = [], set(), 0
+    for tg in tags:
+        tg = re.sub(r"[<>#,]", "", str(tg)).strip()
+        key = tg.lower()
+        if not tg or key in seen or len(tg) > 100:
+            continue
+        cost = len(tg) + (2 if " " in tg else 0) + (1 if out else 0)
+        if used + cost > limit:
+            continue
+        out.append(tg)
+        seen.add(key)
+        used += cost
+    return out
+
+
+def youtube_tags(clip: Clip, meta: dict, first=()) -> list:
+    """Tags for YouTube Studio's Tags box: the creator, the clip's chapter, the source video's
+    tags that fit this clip (best matches first), then general clip tags."""
+    tok = lambda s: set(re.findall(r"[a-z]{3,}", s.lower())) - STOP
+    src = [s for s in meta.get("tags") or [] if s.strip().lower() not in GENERIC_TAGS]
+    # words most source tags share ("surgery", "game") say little about one clip
+    df = {}
+    for s in src:
+        for w in tok(s):
+            df[w] = df.get(w, 0) + 1
+    common = {w for w, n in df.items() if n >= 3}
+    words = tok(clip.text) - common
+    fit = lambda s: len((tok(s) - common) & words)
+    matched = sorted((s for s in src if fit(s)), key=lambda s: -fit(s))
+    who = meta.get("creator")
+    ch = chapter_at(meta, (clip.start + clip.end) / 2)
+    # tags that fit the clip's chapter (an "ear surgery" clip keeps "ear operation")
+    chw = tok(ch) - common - {"part"} if ch else set()
+    near = [s for s in src if not fit(s) and chw & tok(s)]
+    # broad tags about the whole video: its title words or the game/topic every tag shares
+    titlew = tok(meta.get("title") or "") - common
+    broad = [s for s in src if (tok(s) & titlew or tok(s) & common) and not fit(s)
+             and not (chw and tok(s) & {w for c in meta.get("chapters") or []
+                                        for w in tok(c["title"]) - common} - chw)]
+    tags = list(first)
+    if who:
+        tags += [who, f"{who} funny moments", f"{who} shorts"]
+    if ch:
+        tags.append(ch.lower())
+    tags += matched[:5] + near[:2] + broad[:4] + ["funny moments", "shorts"]
+    return tag_budget(tags)[:15]
 
 
 def chapter_at(meta: dict, t: float) -> str:
@@ -556,7 +615,7 @@ def basic_description(clip: Clip, meta: dict, sents, hook: str, title: str) -> s
     if quote:
         quote = quote[0].upper() + quote[1:]
     vt = (meta.get("title") or "").strip()
-    who = meta.get("creator")
+    who = meta.get("handle") or meta.get("creator")
     src = (f"{who}'s “{vt}”" if who and vt else f"“{vt}”" if vt else who or "")
     ch = chapter_at(meta, (clip.start + clip.end) / 2)
     context = (f"{ch}, from {src}." if ch and src else f"From {src}." if src else "")
@@ -592,6 +651,9 @@ def claude_captions(clips, meta: dict):
         "say what happens and make people want to watch, in the creator's tone. Quoting the "
         "best line is fine. No hashtags or links in this field\n"
         "- hashtags: 3 to 6 relevant hashtags, each starting with #\n"
+        "- tags: 8 to 15 YouTube Studio tags for this clip (plain keywords or phrases, no #): "
+        "what happens in it, the game or topic, and the creator. Prefer the source video's "
+        "tags that fit this clip: " + json.dumps((meta.get("tags") or [])[:40]) + "\n"
         "Don't invent events that aren't in the transcript.\n\n" + json.dumps(items))
     schema = {
         "type": "object",
@@ -599,8 +661,9 @@ def claude_captions(clips, meta: dict):
             "type": "object",
             "properties": {"id": {"type": "integer"}, "title": {"type": "string"},
                            "caption": {"type": "string"},
-                           "hashtags": {"type": "array", "items": {"type": "string"}}},
-            "required": ["id", "title", "caption", "hashtags"],
+                           "hashtags": {"type": "array", "items": {"type": "string"}},
+                           "tags": {"type": "array", "items": {"type": "string"}}},
+            "required": ["id", "title", "caption", "hashtags", "tags"],
             "additionalProperties": False}}},
         "required": ["captions"],
         "additionalProperties": False}
@@ -635,8 +698,10 @@ def claude_captions(clips, meta: dict):
         tags = [t if t.startswith("#") else "#" + t for t in d["hashtags"]]
         cap = d["caption"].strip()
         if meta.get("url"):
-            cap += f"\nFull video: {meta['url']}"
-        out.append(dict(title=d["title"], caption=cap, hashtags=tags, source="claude"))
+            who = meta.get("handle") or meta.get("creator")
+            cap += f"\nFull video{' by ' + who if who else ''}: {meta['url']}"
+        out.append(dict(title=d["title"], caption=cap, hashtags=tags,
+                        tags=youtube_tags(c, meta, first=d["tags"]), source="claude"))
     return out
 
 
@@ -663,7 +728,10 @@ def clip_stem(k: int, c: Clip) -> str:
 
 
 def write_caption_file(path: Path, cap: dict):
-    path.write_text(f"{cap['title']}\n\n{cap['caption']}\n\n{' '.join(cap['hashtags'])}\n")
+    text = f"{cap['title']}\n\n{cap['caption']}\n\n{' '.join(cap['hashtags'])}\n"
+    if cap.get("tags"):
+        text += f"\nTags: {', '.join(cap['tags'])}\n"
+    path.write_text(text)
 
 
 # --------------------------------------------------------------------------- LLM re-rank

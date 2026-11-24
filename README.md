@@ -95,16 +95,28 @@ caption is saved as a `.txt` with the same name and in `clips.json`.
 
 Claude also gets the creator's own summary of the video and each clip's chapter, so its
 descriptions say what's happening, not just what was said.
+
+The creator is credited by their YouTube @handle (`@jacksepticeye`), which links to
+their channel and notifies them.
+
+**Tags** for YouTube Studio's Tags box go on a `Tags:` line at the bottom of each `.txt`,
+comma-separated and ready to paste, at most 15 and under YouTube's 500-character limit.
+They're the creator's name, the clip's chapter, the original video's own tags that fit
+this clip (tags for the whole video like "walkthrough" or "ending" are dropped), a few
+broad tags about the game or topic, and "funny moments" / "shorts". With Claude, its
+tags for the clip come first.
 - **off**: no captions. Files are named `clip_01_12m34s.mp4` instead.
 
 ```
 God what are we doing?
 
 “I'm drilling a hole right into your head That's disgusting.”
-Ear Surgery, from jacksepticeye's “OPERATE ON BILLY! | Tonsil, Ear and Heart Surgery”.
+Ear Surgery, from @jacksepticeye's “OPERATE ON BILLY! | Tonsil, Ear and Heart Surgery”.
 Full video: https://www.youtube.com/watch?v=zFk_JjsTMKc
 
 #shorts #jacksepticeye #drilling #operate #billy
+
+Tags: jacksepticeye, jacksepticeye funny moments, jacksepticeye shorts, ear surgery, ...
 ```
 
 ### Chat
