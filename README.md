@@ -9,7 +9,7 @@ OpenShorts and stream-clipper.
 | How moments are picked | Cuts at every topic change (no ranking) | Ranks moments: **chat spikes** + loudness spikes against the local baseline, build-up → peak → payoff, hook, dead-air penalty; optional Claude re-rank |
 | Chat replays | No | YouTube live chat (auto-fetched), Twitch, text logs |
 | Works on streams / IRL / gaming | Weak (transcript only) | Yes |
-| Clip length / count | Not configurable | Each clip as long as its moment (15–90 s by default, `--min`/`--max`), `-n` |
+| Clip length / count | Not configurable | Each clip as long as its moment (15–90 s by default, `--min`/`--max`); as many clips as are good enough (2–10 by default), or `-n` for an exact number |
 | Long videos | Transcribes everything | Scores the whole video first, transcribes only the candidate clips |
 | Cut boundaries | Topic boundaries | Sentence boundaries; never mid-word |
 | Layouts | Follow the active speaker | Picked per clip: **track** one face, **split** two people top/bottom, **screen** (facecam over gameplay), **blur** background |
@@ -32,7 +32,10 @@ The first run downloads the Whisper model (~500 MB for `small`) and a 230 KB fac
 python clipper.py stream.mp4 -o clips
 
 # a YouTube URL; its chat replay is fetched automatically if it has one
-python clipper.py "https://www.youtube.com/watch?v=..." -o clips -n 8 --min 20 --max 45
+python clipper.py "https://www.youtube.com/watch?v=..." -o clips --min 20 --max 45
+
+# exactly 8 clips instead of the automatic count
+python clipper.py stream.mp4 -n 8
 
 # a Twitch VOD with chat exported by TwitchDownloader
 python clipper.py vod.mp4 --chat vod_chat.json
@@ -58,6 +61,17 @@ python clipper.py stream.mp4 --format both
 ```
 
 Only clip videos you have the rights to.
+
+### How many clips
+
+By default clipper keeps every clip that's good enough, at least `--min-clips` (2)
+and at most `--max-clips` (10), so a short video with two good moments gets two clips
+and a long, funny stream can get ten.
+
+- With `--llm`, Claude rates a wider pool of candidates (up to 20) from 0 to 10 as
+  standalone Shorts, and clips rated 6 or higher make the cut.
+- Offline, clips scoring within 75% of the best clip's score make the cut.
+- `-n 5` gives exactly 5 instead.
 
 ### Portrait or landscape (`--format portrait|landscape|both`)
 

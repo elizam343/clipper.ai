@@ -402,6 +402,25 @@ def grow_moments(excite, silent, min_len, max_len, k_seeds=60, gap=5.0, lead=2.0
     return cands
 
 
+GOOD_LLM = 6        # Claude's 0-10 rating a clip needs to make the cut
+GOOD_REL = 0.75     # offline: share of the best clip's score a clip needs
+
+
+def choose_clips(pool, count, lo, hi):
+    """Exact `count` if given; otherwise every clip that's good enough, kept within lo..hi.
+    Good enough = Claude rated it GOOD_LLM+/10, or (offline) it scores within GOOD_REL of
+    the best clip."""
+    ranked = sorted(pool, key=lambda c: -c.score)
+    if count:
+        return ranked[:count]
+    if any(c.llm for c in ranked):
+        good = [c for c in ranked if c.llm and (c.llm.get("score") or 0) >= GOOD_LLM]
+    else:
+        best = ranked[0].score if ranked else 0
+        good = [c for c in ranked if best > 0 and c.score >= GOOD_REL * best]
+    return ranked[:max(lo, min(hi, len(good)))]
+
+
 def pick(cands, k, gap=5.0):
     chosen = []
     for c in sorted(cands, key=lambda c: -c.score):
@@ -781,8 +800,8 @@ def llm_rerank(clips, model="claude-sonnet-5-5"):
         '[{"id":0,"score":7,"reason":"..."}].\n\n' + json.dumps(items))
     try:
         msg = anthropic.Anthropic().messages.create(
-            model=model, max_tokens=2000, messages=[{"role": "user", "content": prompt}])
-        txt = msg.content[0].text
+            model=model, max_tokens=6000, messages=[{"role": "user", "content": prompt}])
+        txt = next(b.text for b in msg.content if b.type == "text")
         data = json.loads(txt[txt.index("["): txt.rindex("]") + 1])
     except Exception as ex:  # keep going with heuristic scores
         log("LLM re-rank failed:", ex)
@@ -1125,7 +1144,11 @@ def main():
     ap = argparse.ArgumentParser(description="Turn a long video into vertical short clips.")
     ap.add_argument("input", help="video file or URL (URLs need yt-dlp)")
     ap.add_argument("-o", "--out", default="clips", help="output folder")
-    ap.add_argument("-n", "--count", type=int, default=5, help="number of clips")
+    ap.add_argument("-n", "--count", type=int, default=None,
+                    help="exact number of clips (default: automatic, every clip that's good "
+                         "enough, between --min-clips and --max-clips)")
+    ap.add_argument("--min-clips", type=int, default=2, help="automatic count: at least this many")
+    ap.add_argument("--max-clips", type=int, default=10, help="automatic count: at most this many")
     ap.add_argument("--min", type=float, default=15, help="min clip length (s)")
     ap.add_argument("--max", type=float, default=90, help="max clip length (s); each clip is as long as its moment, up to this")
     ap.add_argument("--layout", choices=LAYOUTS, default="auto",
@@ -1207,7 +1230,13 @@ def main():
     silent = np.where(mask, silent, True)
 
     cands = grow_moments(excite, silent, a.min, a.max)
-    pool = pick(cands, a.count * 3 if (a.llm and not a.no_transcribe) else a.count)
+    use_llm = a.llm and not a.no_transcribe
+    if a.count:
+        pool = pick(cands, a.count * 3 if use_llm else a.count)
+    elif use_llm:   # Claude rates a wider pool and decides which are good enough
+        pool = pick(cands, min(2 * a.max_clips, 20))
+    else:           # offline scores don't change after transcription, so choose now
+        pool = choose_clips(pick(cands, a.max_clips), None, a.min_clips, a.max_clips)
     log(f"{len(pool)} candidate moments")
 
     # 2) transcribe only the candidate regions, snap to sentence boundaries
@@ -1229,7 +1258,10 @@ def main():
 
     if a.llm and not a.no_transcribe:
         pool = llm_rerank(pool)
-    clips = sorted(pool, key=lambda c: -c.score)[: a.count]
+    clips = choose_clips(pool, a.count, a.min_clips, a.max_clips)
+    if not a.count:
+        log(f"automatic count: {len(clips)} clip{'s' if len(clips) != 1 else ''} good enough "
+            f"(range {a.min_clips}-{a.max_clips})")
     clips.sort(key=lambda c: c.start)
 
     # captions first: each clip's file is named after its caption title
