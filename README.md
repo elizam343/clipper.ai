@@ -75,6 +75,27 @@ In scripts or other non-interactive runs it uses portrait without asking. Portra
 clips use the layouts below. Landscape clips are 1920×1080 with nothing cropped
 (letterboxed if the source isn't 16:9) and end in `_landscape.mp4`.
 
+### Post captions (`--captions auto|basic|off`)
+
+Every clip gets a caption you can paste when you post it: a title, one or two
+sentences, and hashtags. It's saved as a `.txt` next to the clip
+(`clip_01_00m19s.txt`) and in `clips.json`.
+
+- **auto** (default): Claude writes the captions from each clip's transcript in one
+  request. Needs `pip install anthropic` and an API key
+  (`export ANTHROPIC_API_KEY=sk-ant-...`). Without them, clipper falls back to basic.
+- **basic**: offline. Uses the video title, the clip's first full sentence as the hook,
+  and hashtags from the creator, the title, and words the clip repeats.
+- **off**: no captions.
+
+```
+OPERATE ON BILLY!
+
+It sucks all the shit out of your neck.
+
+#shorts #jacksepticeye #operate #billy #tonsil
+```
+
 ### Chat
 
 Chat spikes are the strongest signal for streams. When chat explodes, something

@@ -298,6 +298,7 @@ class Clip:
     layout: str = ""
     file: str = ""
     files: list = field(default_factory=list)
+    caption: dict | None = None
 
 
 def score_windows(excite, silent, min_len, max_len):
@@ -353,16 +354,18 @@ def whisper_model(name):
 
 def transcribe_range(path: Path, start: float, end: float, model: str, lang, tmp: Path):
     """Transcribe only [start, end]; returns segments with absolute times."""
-    wav = tmp / f"seg_{start:.1f}.wav"
-    run(["ffmpeg", "-v", "error", "-y", "-ss", f"{start:.2f}", "-t", f"{end - start:.2f}",
-         "-i", str(path), "-vn", "-ac", "1", "-ar", "16000", str(wav)])
-    segs, _ = whisper_model(model).transcribe(str(wav), language=lang, vad_filter=True,
+    # Decode with ffmpeg and hand Whisper the samples directly. Passing a file path makes
+    # faster-whisper decode it with PyAV, which breaks whenever PyAV changes its API.
+    raw = subprocess.run(["ffmpeg", "-v", "error", "-ss", f"{start:.2f}", "-t", f"{end - start:.2f}",
+                          "-i", str(path), "-vn", "-ac", "1", "-ar", "16000", "-f", "s16le", "-"],
+                         capture_output=True, check=True).stdout
+    audio = np.frombuffer(raw, np.int16).astype(np.float32) / 32768
+    segs, _ = whisper_model(model).transcribe(audio, language=lang, vad_filter=True,
                                               word_timestamps=True)
     out = []
     for s in segs:
         words = [(w.start + start, w.end + start, w.word) for w in (s.words or [])]
         out.append(dict(start=s.start + start, end=s.end + start, text=s.text.strip(), words=words))
-    wav.unlink(missing_ok=True)
     return out
 
 
@@ -398,6 +401,119 @@ def snap(clip: Clip, segs, silent, min_len, max_len, duration):
         e = s + max_len
     clip.start, clip.end = round(s, 2), round(e, 2)
     return clip
+
+
+# --------------------------------------------------------------------------- post captions
+CAPTION_MODEL = "claude-opus-5-5"
+STOP = set("a an and are as at be but by for from has have i if in is it its just like me my "
+           "of on or our so that the their them then there this to up was we what when with "
+           "you your yeah okay oh um uh gonna got get go these those where which while would "
+           "could should about actually really thing things stuff because doing going know "
+           "think right some been being here they into only even still every other something "
+           "anyway always never maybe pretty kind sort little much very well call".split())
+
+
+def _tag(s: str) -> str:
+    return "#" + re.sub(r"[^0-9A-Za-z]", "", s).lower()
+
+
+def basic_caption(clip: Clip, meta: dict) -> dict:
+    """Offline caption: the clip's opening line as a hook plus simple hashtags."""
+    text = re.sub(r"\s+", " ", clip.text).strip()
+    # the clip often opens mid-sentence, so use the first complete-looking sentence
+    sents = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
+    full = [s for s in sents if len(s.split()) >= 5 and s[0].isupper()]
+    hook = (full or sents or [""])[0]
+    if len(hook) > 100:
+        hook = hook[:97].rsplit(" ", 1)[0] + "..."
+    title = re.sub(r"\s*[|•-]\s*.*$", "", meta.get("title") or "").strip() or hook[:60]
+    # hashtags: words from the title, then words the clip keeps repeating
+    tw = [w.lower() for w in re.findall(r"[A-Za-z]{4,}", meta.get("title") or "")
+          if w.lower() not in STOP]
+    cw = [w.lower() for w in re.findall(r"[A-Za-z]{5,}", text) if w.lower() not in STOP]
+    rep = sorted({w for w in cw if cw.count(w) >= 2}, key=lambda w: -cw.count(w))
+    tags = ["#shorts"]
+    if meta.get("creator"):
+        tags.append(_tag(meta["creator"]))
+    for w in (rep + tw)[:3]:
+        tags.append(_tag(w))
+    return dict(title=title, caption=hook or title, hashtags=list(dict.fromkeys(tags)),
+                source="basic")
+
+
+def claude_captions(clips, meta: dict):
+    """One Claude call for all clips. Returns a list of dicts, or None if Claude isn't usable."""
+    try:
+        import anthropic
+    except ImportError:
+        log("captions: 'anthropic' not installed (pip install anthropic); using basic captions")
+        return None
+    items = [dict(id=i, seconds=round(c.end - c.start), transcript=c.text[:1500])
+             for i, c in enumerate(clips)]
+    prompt = (
+        "These are clips cut from one video to post as YouTube Shorts / TikToks / Reels.\n"
+        f"Video title: {meta.get('title') or 'unknown'}\n"
+        f"Creator: {meta.get('creator') or 'unknown'}\n\n"
+        "For each clip write a post caption based on what actually happens in its transcript:\n"
+        "- title: a short, punchy title, at most 60 characters\n"
+        "- caption: one or two sentences that make people want to watch, at most 150 "
+        "characters, in the creator's tone; no hashtags in this field\n"
+        "- hashtags: 3 to 6 relevant hashtags, each starting with #\n"
+        "Don't invent events that aren't in the transcript.\n\n" + json.dumps(items))
+    schema = {
+        "type": "object",
+        "properties": {"captions": {"type": "array", "items": {
+            "type": "object",
+            "properties": {"id": {"type": "integer"}, "title": {"type": "string"},
+                           "caption": {"type": "string"},
+                           "hashtags": {"type": "array", "items": {"type": "string"}}},
+            "required": ["id", "title", "caption", "hashtags"],
+            "additionalProperties": False}}},
+        "required": ["captions"],
+        "additionalProperties": False}
+    try:
+        resp = anthropic.Anthropic().beta.messages.create(
+            model=CAPTION_MODEL, max_tokens=4000,
+            betas=["server-side-fallback-2026-07-01"], fallbacks="default",
+            output_config={"effort": "low", "format": {"type": "json_schema", "schema": schema}},
+            messages=[{"role": "user", "content": prompt}])
+    except (anthropic.AuthenticationError, TypeError):
+        # TypeError: the SDK found no API key / auth token / profile at all
+        log("captions: no Claude credentials (set ANTHROPIC_API_KEY); using basic captions")
+        return None
+    except anthropic.APIError as ex:
+        log("captions: Claude request failed; using basic captions:", ex)
+        return None
+    if resp.stop_reason != "end_turn":
+        log(f"captions: Claude stopped early ({resp.stop_reason}); using basic captions")
+        return None
+    try:
+        text = next(b.text for b in resp.content if b.type == "text")
+        by_id = {d["id"]: d for d in json.loads(text)["captions"]}
+    except (StopIteration, ValueError, KeyError, TypeError):
+        log("captions: couldn't read Claude's reply; using basic captions")
+        return None
+    out = []
+    for i, c in enumerate(clips):
+        d = by_id.get(i)
+        if d is None:
+            out.append(basic_caption(c, meta))
+            continue
+        tags = [t if t.startswith("#") else "#" + t for t in d["hashtags"]]
+        out.append(dict(title=d["title"], caption=d["caption"], hashtags=tags, source="claude"))
+    return out
+
+
+def write_captions(clips, meta: dict, out: Path, use_claude: bool):
+    caps = claude_captions(clips, meta) if use_claude else None
+    if caps is None:
+        caps = [basic_caption(c, meta) for c in clips]
+    for c, cap in zip(clips, caps):
+        c.caption = cap
+        stem = Path(c.file).stem.removesuffix("_landscape")
+        (out / f"{stem}.txt").write_text(
+            f"{cap['title']}\n\n{cap['caption']}\n\n{' '.join(cap['hashtags'])}\n")
+    log(f"captions: wrote {len(clips)} ({caps[0]['source'] if caps else 'none'})")
 
 
 # --------------------------------------------------------------------------- LLM re-rank
@@ -787,6 +903,9 @@ def main():
                     "(landscape uses the same size turned sideways, e.g. 1920x1080)")
     ap.add_argument("--crf", type=int, default=20, help="x264 quality (lower = better)")
     ap.add_argument("--analyze-only", action="store_true", help="write clips.json, don't render")
+    ap.add_argument("--captions", choices=["auto", "basic", "off"], default="auto",
+                    help="post caption (title, text, hashtags) per clip. auto: written by Claude "
+                         "when credentials are set, else basic; basic: offline, from the transcript")
     a = ap.parse_args()
     if a.format is None:
         a.format = ask_format() if (sys.stdin.isatty() and not a.analyze_only) else "portrait"
@@ -900,6 +1019,11 @@ def main():
             render_screen(src, c, info, data, out / name, W, H, a.crf)
         else:
             render_blur(src, c, info, out / name, W, H, a.crf)
+
+    if a.captions != "off" and clips:
+        if not any(c.text for c in clips):
+            log("captions: no transcript, so captions are based on the video title only")
+        write_captions(clips, meta, out, use_claude=a.captions == "auto")
 
     report = dict(source=str(src), video=meta, chat=str(chat_file) if chat_file else None,
                   settings=vars(a), clips=[{**asdict(c), "score": round(c.score, 4)} for c in clips])
