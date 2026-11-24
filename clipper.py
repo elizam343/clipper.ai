@@ -721,6 +721,8 @@ def claude_captions(clips, meta: dict):
             out.append(basic_caption(c, meta))
             continue
         tags = [t if t.startswith("#") else "#" + t for t in d["hashtags"]]
+        # #shorts helps YouTube treat the upload as a Short
+        tags = ["#shorts"] + [t for t in tags if t.lower() != "#shorts"]
         cap = d["caption"].strip()
         if meta.get("url"):
             who = meta.get("handle") or meta.get("creator")
