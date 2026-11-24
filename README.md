@@ -9,7 +9,7 @@ OpenShorts and stream-clipper.
 | How moments are picked | Cuts at every topic change (no ranking) | Ranks moments: **chat spikes** + loudness spikes against the local baseline, build-up → peak → payoff, hook, dead-air penalty; optional Claude re-rank |
 | Chat replays | No | YouTube live chat (auto-fetched), Twitch, text logs |
 | Works on streams / IRL / gaming | Weak (transcript only) | Yes |
-| Clip length / count | Not configurable | `--min`, `--max`, `-n` |
+| Clip length / count | Not configurable | Each clip as long as its moment (15–90 s by default, `--min`/`--max`), `-n` |
 | Long videos | Transcribes everything | Scores the whole video first, transcribes only the candidate clips |
 | Cut boundaries | Topic boundaries | Sentence boundaries; never mid-word |
 | Layouts | Follow the active speaker | Picked per clip: **track** one face, **split** two people top/bottom, **screen** (facecam over gameplay), **blur** background |
@@ -156,19 +156,27 @@ was picked.
 1. **Signals.** Audio loudness every 0.1 s is compared with a rolling 60 s baseline.
    Chat rate and hype are compared with a rolling 2 min baseline. The two are blended
    into one excitement curve.
-2. **Scoring.** Windows of several lengths slide across the video. A strong peak,
-   sustained intensity and a peak about 60% of the way through (build-up, then
-   payoff) all raise the score. Dead air lowers it. The best non-overlapping windows
-   are chosen.
-3. **Snapping.** Just those regions are transcribed, and each clip's start and end
+2. **Finding moments (dynamic length).** Each clip grows outward from an excitement
+   peak, so the moment decides how long it is. Going forward, the clip keeps
+   extending while exciting stretches keep coming back within 5 s, so a pause between
+   laughs doesn't end it. It stops once things stay ordinary. Going backward, it takes
+   in the build-up. "Exciting" is measured against the video's own ordinary level, so
+   it works for a calm podcast and a screaming stream alike. Clips stay between
+   `--min` and `--max` (default 15–90 s). A moment longer than `--max` is trimmed to
+   its strongest stretch.
+3. **Scoring.** A clip gets credit for its peak and for every second above the
+   video's ordinary level, and loses points for flat stretches and dead air. A long
+   clip only wins if it stays interesting. The best non-overlapping clips are chosen.
+4. **Snapping.** Just those regions are transcribed, and each clip's start and end
    move to sentence boundaries. With `--no-transcribe`, they snap to nearby silences.
-4. **Framing.** For each clip, faces are detected about 6 times a second and scene
+5. **Framing.** For each clip, faces are detected about 6 times a second and scene
    cuts on every frame, along with how much the frame moves. That's used to choose
    a layout and render it.
 
 ## Tuning ideas
 
-- If clips feel too short or too long, change `--min` and `--max`.
+- Clip length follows the moment. To cap it, use `--max` (for example `--max 60`);
+  to never go below a length, use `--min`.
 - If chat seems to lag more or less than 4 s on your streams, adjust `--chat-delay`.
 - For talk-heavy podcasts, use `--llm`. Loudness alone favours shouting.
 - Facecam detection needs the gameplay to be moving. For slow games, force

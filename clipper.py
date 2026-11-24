@@ -301,31 +301,85 @@ class Clip:
     caption: dict | None = None
 
 
-def score_windows(excite, silent, min_len, max_len):
-    """Score every window; returns list of Clip candidates."""
+def grow_moments(excite, silent, min_len, max_len, k_seeds=60, gap=5.0, lead=2.0, tail=1.5):
+    """Find clips by growing outward from excitement peaks, so each moment picks its own length.
+
+    A clip keeps extending while exciting stretches keep coming back within `gap` seconds
+    (a pause between laughs doesn't end it) and stops once things stay ordinary. Backward it
+    takes in the build-up. Scoring credits every second above the video's ordinary level and
+    charges for flat stretches, so a long clip only wins if it stays interesting.
+    """
     n = len(excite)
-    lens = sorted({int(round(L / RES)) for L in np.linspace(min_len, max_len, 4)})
+    valid = ~(silent & (excite == 0))          # outside --start/--end is zeroed and silent
+    vidx = np.flatnonzero(valid)
+    if len(vidx) == 0:
+        return []
+    lo, hi = int(vidx[0]), int(vidx[-1]) + 1
+    sm = max(1, int(3 / RES))
+    heat = np.convolve(excite, np.ones(sm) / sm, mode="same")
+    ref = heat[valid]
+    # thresholds are relative to this video: a calm podcast and a screaming stream both work
+    base = float(np.median(ref))               # an ordinary second
+    hot_t = float(np.percentile(ref, 72))      # clearly above ordinary
+    top = float(np.percentile(ref, 99.5))
+    hot = (heat >= hot_t) & valid
+    g = int(gap / RES)
+    minb, maxb = int(min_len / RES), int(max_len / RES)
+
+    seeds = []                                  # highest local peaks, at least 10 s apart
+    for i in np.argsort(-heat):
+        if not hot[i]:
+            break
+        if all(abs(i - s) > int(10 / RES) for s in seeds):
+            seeds.append(int(i))
+            if len(seeds) >= k_seeds:
+                break
+
     cands = []
-    hook_bins = int(3 / RES)
-    for L in lens:
-        if L >= n:
-            continue
-        win = np.lib.stride_tricks.sliding_window_view(excite, L)
-        peak = np.minimum(win.max(1), 6) / 6
-        top = np.sort(win, axis=1)[:, -max(1, L // 6):].mean(1)
-        intensity = np.minimum(top, 4) / 4
-        hook = np.minimum(win[:, :hook_bins].mean(1), 3) / 3
-        pos = win.argmax(1) / L
-        # best shorts build up to the peak and end soon after it
-        payoff = np.clip(1 - np.abs(pos - 0.6) / 0.45, 0, 1)
-        dead = np.lib.stride_tricks.sliding_window_view(silent.astype(np.float32), L).mean(1)
-        lenpen = (L * RES - min_len) / max(1, max_len - min_len) * 0.05
-        s = 0.3 * peak + 0.2 * intensity + 0.1 * hook + 0.2 * payoff - 0.35 * dead - lenpen
-        for i in range(0, len(s), 2):  # 1s stride is plenty
-            cands.append(Clip(i * RES, (i + L) * RES, float(s[i]), dict(
-                peak=round(float(peak[i]), 3), intensity=round(float(intensity[i]), 3),
-                hook=round(float(hook[i]), 3), payoff=round(float(payoff[i]), 2),
-                dead_air=round(float(dead[i]), 3))))
+    for s in seeds:
+        e, cold, j = s, 0, s                    # forward: ride the moment until it goes flat
+        while j < hi - 1 and (j - s) < maxb:
+            j += 1
+            if hot[j]:
+                e, cold = j, 0
+            else:
+                cold += 1
+                if cold >= g:
+                    break
+        b, cold, j = s, 0, s                    # backward: include the build-up
+        while j > lo and (s - j) < maxb:
+            j -= 1
+            if hot[j]:
+                b, cold = j, 0
+            else:
+                cold += 1
+                if cold >= g // 2 + 1:
+                    break
+        a0 = max(lo, b - int(lead / RES))
+        a1 = min(hi, e + 1 + int(tail / RES))
+        if a1 - a0 < minb:                      # too short: pad, mostly after (reactions come after)
+            a0 = max(lo, a0 - (minb - (a1 - a0)) // 3)
+            a1 = min(hi, a0 + minb)
+            a0 = max(lo, a1 - minb)
+        if a1 - a0 > maxb:                      # too long: keep the strongest max-length stretch
+            cs = np.concatenate([[0], np.cumsum(np.clip(heat[a0:a1] - base, 0, None))])
+            o = int(np.argmax(cs[maxb:] - cs[:-maxb]))
+            a0, a1 = a0 + o, a0 + o + maxb
+        seg = heat[a0:a1]
+        cands.append(Clip(a0 * RES, a1 * RES, 0.0, dict(
+            peak=round(min(float(seg.max() - base) / max(top - base, 1e-6), 1.0), 3),
+            excess=round(float(np.clip(seg - base, 0, None).sum() * RES), 2),
+            dull=round(float((seg < base).mean()), 3),
+            hook=round(min(float(np.clip(heat[a0:a0 + int(3 / RES)] - base, 0, None).mean())
+                           / max(hot_t - base, 1e-6), 1.0), 3),
+            dead_air=round(float(silent[a0:a1].mean()), 3))))
+    if not cands:
+        return []
+    eref = float(np.percentile([c.parts["excess"] for c in cands], 90)) or 1.0
+    for c in cands:
+        p = c.parts
+        c.score = (0.35 * p["peak"] + 0.4 * min(p["excess"] / eref, 1.2) + 0.1 * p["hook"]
+                   - 0.3 * p["dull"] - 0.35 * p["dead_air"])
     return cands
 
 
@@ -881,7 +935,7 @@ def main():
     ap.add_argument("-o", "--out", default="clips", help="output folder")
     ap.add_argument("-n", "--count", type=int, default=5, help="number of clips")
     ap.add_argument("--min", type=float, default=15, help="min clip length (s)")
-    ap.add_argument("--max", type=float, default=60, help="max clip length (s)")
+    ap.add_argument("--max", type=float, default=90, help="max clip length (s); each clip is as long as its moment, up to this")
     ap.add_argument("--layout", choices=LAYOUTS, default="auto",
                     help="auto picks per clip: screen (facecam+gameplay), split (two people), "
                          "track (follow one face) or blur")
@@ -960,7 +1014,7 @@ def main():
     excite = np.where(mask, excite, 0)
     silent = np.where(mask, silent, True)
 
-    cands = score_windows(excite, silent, a.min, a.max)
+    cands = grow_moments(excite, silent, a.min, a.max)
     pool = pick(cands, a.count * 3 if (a.llm and not a.no_transcribe) else a.count)
     log(f"{len(pool)} candidate moments")
 
