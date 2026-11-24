@@ -3,25 +3,25 @@
 clipper — turn a long video into vertical short clips.
 
 Inspired by ClipsAI, rebuilt to fix its weak spots:
-  * Ranks moments (loudness spikes, hooks, payoff, dead air) instead of
-    cutting at every topic change, so it works for streams, not just podcasts.
+  * Ranks moments (loudness spikes, chat spikes, hooks, payoff, dead air)
+    instead of cutting at every topic change, so it works for streams.
+  * Reads chat replays (YouTube live chat, Twitch) — when chat explodes,
+    something happened. Audio + chat agreeing scores highest.
   * You choose how many clips and how long they are.
-  * Fast on long streams: it scores the whole audio first, then transcribes
+  * Fast on long streams: it scores the whole video first, then transcribes
     only the candidate regions (no 3-hour Whisper pass).
-  * Smooth "camera operator" face tracking with a dead zone, look-ahead
-    smoothing and hard jumps at scene cuts; falls back to a blurred-background
-    layout when there's no clear face (crowds, gameplay, screens).
+  * Picks a layout per clip: follow one face (smooth "camera operator"),
+    split two speakers top/bottom, facecam-over-gameplay, or blurred background.
   * Renders finished 1080x1920 MP4s plus a clips.json report.
   * Optional: let Claude re-rank candidates from their transcripts (--llm).
 
 Usage:
-  python clipper.py VIDEO_OR_URL [-o out] [--count 5] [--min 15] [--max 60]
+  python clipper.py VIDEO_OR_URL [-o out] [-n 5] [--min 15] [--max 60] [--chat FILE]
 """
 from __future__ import annotations
 
 import argparse
 import json
-import math
 import os
 import re
 import shutil
@@ -38,6 +38,8 @@ YUNET_URL = ("https://media.githubusercontent.com/media/opencv/opencv_zoo/main/"
 SR = 16000          # analysis sample rate
 HOP = 0.1           # loudness hop (s)
 RES = 0.5           # scoring resolution (s)
+LAYOUTS = ["auto", "track", "split", "screen", "blur"]
+SCREEN_MOTION = 4.0  # mean pixel change (0-255) outside the facecam that counts as gameplay
 
 
 def log(*a):
@@ -48,8 +50,13 @@ def run(cmd, **kw):
     return subprocess.run(cmd, check=True, **kw)
 
 
+def even(x):
+    return int(round(x / 2) * 2)
+
+
 # --------------------------------------------------------------------------- ingest
-def ingest(src: str, workdir: Path) -> Path:
+def ingest(src: str, workdir: Path, want_chat: bool):
+    """Return (video_path, chat_path_or_None)."""
     if re.match(r"^https?://", src):
         if not shutil.which("yt-dlp"):
             sys.exit("yt-dlp is not installed: pip install yt-dlp")
@@ -57,14 +64,29 @@ def ingest(src: str, workdir: Path) -> Path:
         out = workdir / "source.%(ext)s"
         run(["yt-dlp", "-f", "bv*[height<=1080]+ba/b[height<=1080]/b",
              "--merge-output-format", "mp4", "-o", str(out), src])
-        files = sorted(workdir.glob("source.*"))
-        if not files:
+        vids = [f for f in sorted(workdir.glob("source.*")) if f.suffix in (".mp4", ".mkv", ".webm", ".mov")]
+        if not vids:
             sys.exit("download failed")
-        return files[0]
+        chat = None
+        if want_chat and "youtu" in src:
+            log("fetching chat replay (if the video has one)")
+            subprocess.run(["yt-dlp", "--skip-download", "--write-subs", "--sub-langs", "live_chat",
+                            "-o", str(workdir / "source.%(ext)s"), src],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            found = sorted(workdir.glob("source*.live_chat.json"))
+            chat = found[0] if found else None
+        return vids[0], chat
     p = Path(src).expanduser().resolve()
     if not p.exists():
         sys.exit(f"not found: {p}")
-    return p
+    chat = None
+    if want_chat:  # pick up a chat file saved next to the video
+        for cand in (p.with_suffix(".live_chat.json"), p.with_suffix(".chat.json"),
+                     p.with_suffix(".json"), p.with_suffix(".chat.txt")):
+            if cand.exists():
+                chat = cand
+                break
+    return p, chat
 
 
 def probe(path: Path) -> dict:
@@ -83,6 +105,24 @@ def probe(path: Path) -> dict:
         fps = 30.0
     return dict(duration=float(j["format"]["duration"]), width=int(v["width"]),
                 height=int(v["height"]), fps=fps, has_audio=has_audio)
+
+
+# --------------------------------------------------------------------------- shared stats
+def rolling_stat(x: np.ndarray, win: int, fn) -> np.ndarray:
+    """Cheap rolling statistic: compute on blocks, then interpolate."""
+    blk = max(1, win // 12)
+    nb = max(1, len(x) // blk)
+    centers, vals = [], []
+    for i in range(nb):
+        lo = max(0, i * blk - win // 2)
+        hi = min(len(x), i * blk + win // 2)
+        centers.append(i * blk + blk / 2)
+        vals.append(fn(x[lo:hi]))
+    return np.interp(np.arange(len(x)), centers, vals)
+
+
+def mad(s):
+    return np.median(np.abs(s - np.median(s)))
 
 
 # --------------------------------------------------------------------------- audio
@@ -107,24 +147,11 @@ def loudness_curve(path: Path) -> np.ndarray:
     return np.concatenate(out) if out else np.zeros(1)
 
 
-def rolling_stat(x: np.ndarray, win: int, fn) -> np.ndarray:
-    """Cheap rolling statistic: compute on blocks, then interpolate."""
-    blk = max(1, win // 12)
-    nb = max(1, len(x) // blk)
-    centers, vals = [], []
-    for i in range(nb):
-        lo = max(0, i * blk - win // 2)
-        hi = min(len(x), i * blk + win // 2)
-        centers.append(i * blk + blk / 2)
-        vals.append(fn(x[lo:hi]))
-    return np.interp(np.arange(len(x)), centers, vals)
-
-
 def audio_features(db: np.ndarray):
     """Return excitement (z-score above local baseline) and silence mask at RES."""
     base = rolling_stat(db, int(60 / HOP), np.median)
-    mad = rolling_stat(db, int(60 / HOP), lambda s: np.median(np.abs(s - np.median(s))))
-    z = (db - base) / np.maximum(mad * 1.4826, 2.0)
+    spread = rolling_stat(db, int(60 / HOP), mad)
+    z = (db - base) / np.maximum(spread * 1.4826, 2.0)
     k = int(RES / HOP)
     n = len(db) // k
     zr = z[: n * k].reshape(n, k)
@@ -133,6 +160,92 @@ def audio_features(db: np.ndarray):
     excite = np.convolve(excite, np.ones(3) / 3, mode="same")
     silent = (dbr.mean(1) < np.maximum(base[: n * k].reshape(n, k).mean(1) - 12, -60)) | (dbr.mean(1) < -50)
     return excite, silent
+
+
+# --------------------------------------------------------------------------- chat
+HYPE = re.compile(
+    r"(pog|kekw|lul|lmf?ao+|lo+l|omg|omfg|wtf|holy|no ?way|clip ?(it|that)|\bw+\b|\bw (stream|speed|rizz)|"
+    r"insane|crazy|bro+|ayo+|sheesh|dead|😂|🤣|💀|😭|🔥|‼|!!!)", re.I)
+
+
+def load_chat(path: Path):
+    """Return list of (seconds, text) from common chat-replay formats."""
+    msgs = []
+    raw = path.read_text(encoding="utf-8", errors="ignore")
+
+    def yt_runs(r):
+        out = []
+        for run_ in r.get("message", {}).get("runs", []):
+            if "text" in run_:
+                out.append(run_["text"])
+            elif "emoji" in run_:
+                sc = run_["emoji"].get("shortcuts") or [run_["emoji"].get("emojiId", "")]
+                out.append(sc[0])
+        return "".join(out)
+
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        data = None
+
+    if isinstance(data, dict) and "comments" in data:  # TwitchDownloader JSON
+        for c in data["comments"]:
+            t = c.get("content_offset_seconds")
+            body = (c.get("message") or {}).get("body", "")
+            if t is not None:
+                msgs.append((float(t), body))
+    elif isinstance(data, list):  # chat-downloader / generic list
+        for c in data:
+            t = c.get("time_in_seconds", c.get("content_offset_seconds", c.get("t")))
+            body = c.get("message", c.get("text", ""))
+            if isinstance(body, dict):
+                body = body.get("body", "")
+            if t is not None:
+                msgs.append((float(t), str(body)))
+    elif raw.lstrip().startswith("{"):  # yt-dlp live_chat.json (JSON lines)
+        for line in raw.splitlines():
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            r = obj.get("replayChatItemAction", obj)
+            off = r.get("videoOffsetTimeMsec", obj.get("videoOffsetTimeMsec"))
+            if off is None:
+                continue
+            for act in r.get("actions", []):
+                item = act.get("addChatItemAction", {}).get("item", {})
+                rend = (item.get("liveChatTextMessageRenderer") or item.get("liveChatPaidMessageRenderer"))
+                if rend:
+                    msgs.append((int(off) / 1000, yt_runs(rend)))
+    else:  # text log: "[1:02:03] user: message" or "01:02:03 message"
+        pat = re.compile(r"^\s*\[?((?:\d+:)?\d{1,2}:\d{2}(?:\.\d+)?)\]?\s*(.*)$")
+        for line in raw.splitlines():
+            m = pat.match(line)
+            if m:
+                parts = [float(x) for x in m.group(1).split(":")]
+                t = sum(v * 60 ** (len(parts) - 1 - i) for i, v in enumerate(parts))
+                msgs.append((t, m.group(2)))
+    return msgs
+
+
+def chat_features(msgs, n_bins, delay):
+    """Chat excitement per RES bin: message-rate + hype spikes vs. a rolling baseline,
+    shifted back by `delay` seconds because chat reacts after the moment."""
+    w = np.zeros(n_bins)
+    for t, text in msgs:
+        i = int((t - delay) / RES)
+        if 0 <= i < n_bins:
+            hype = 1.0 if HYPE.search(text or "") else 0.0
+            letters = [ch for ch in (text or "") if ch.isalpha()]
+            if len(letters) >= 4 and sum(ch.isupper() for ch in letters) / len(letters) > 0.7:
+                hype += 0.5
+            w[i] += 1.0 + hype
+    w = np.convolve(w, np.ones(4) / 4, mode="same") * 4 / (4 * RES)  # weighted msgs per second
+    win = int(120 / RES)
+    base = rolling_stat(w, win, np.median)
+    spread = rolling_stat(w, win, mad)
+    z = (w - base) / np.maximum(spread * 1.4826, np.sqrt(base + 0.25))
+    return np.clip(z, 0, 8)
 
 
 # --------------------------------------------------------------------------- scoring
@@ -148,16 +261,12 @@ class Clip:
     file: str = ""
 
 
-def score_windows(excite, silent, min_len, max_len, words=None):
+def score_windows(excite, silent, min_len, max_len):
     """Score every window; returns list of Clip candidates."""
     n = len(excite)
     lens = sorted({int(round(L / RES)) for L in np.linspace(min_len, max_len, 4)})
     cands = []
     hook_bins = int(3 / RES)
-    wd_med = None
-    if words is not None:
-        nz = words[words > 0]
-        wd_med = float(np.median(nz)) if len(nz) else 1.0
     for L in lens:
         if L >= n:
             continue
@@ -172,16 +281,11 @@ def score_windows(excite, silent, min_len, max_len, words=None):
         dead = np.lib.stride_tricks.sliding_window_view(silent.astype(np.float32), L).mean(1)
         lenpen = (L * RES - min_len) / max(1, max_len - min_len) * 0.05
         s = 0.3 * peak + 0.2 * intensity + 0.1 * hook + 0.2 * payoff - 0.35 * dead - lenpen
-        sp = np.zeros_like(s)
-        if words is not None:
-            wv = np.lib.stride_tricks.sliding_window_view(words, L).mean(1)
-            sp = np.minimum(wv / max(wd_med, 1e-3), 1.5) / 1.5
-            s = s + 0.1 * sp
         for i in range(0, len(s), 2):  # 1s stride is plenty
             cands.append(Clip(i * RES, (i + L) * RES, float(s[i]), dict(
                 peak=round(float(peak[i]), 3), intensity=round(float(intensity[i]), 3),
                 hook=round(float(hook[i]), 3), payoff=round(float(payoff[i]), 2),
-                dead_air=round(float(dead[i]), 3), speech=round(float(sp[i]), 3))))
+                dead_air=round(float(dead[i]), 3))))
     return cands
 
 
@@ -234,8 +338,7 @@ def snap(clip: Clip, segs, silent, min_len, max_len, duration):
         if ends:
             e = min(ends, key=lambda t: abs(t - e))
         else:
-            # never end inside a word
-            for g in segs:
+            for g in segs:  # never end inside a word
                 for ws, we, _ in g["words"]:
                     if ws < e < we:
                         e = we if we - s <= max_len else ws
@@ -295,7 +398,7 @@ def llm_rerank(clips, model="claude-sonnet-5-5"):
     return clips
 
 
-# --------------------------------------------------------------------------- framing
+# --------------------------------------------------------------------------- framing: analysis
 def get_detector(model_dir: Path):
     import cv2
     path = model_dir / "face_detection_yunet_2023mar.onnx"
@@ -308,24 +411,24 @@ def get_detector(model_dir: Path):
 
 def decode(path, start, dur, w=None, h=None):
     vf = ["-vf", f"scale={w}:{h}"] if w else []
-    p = subprocess.Popen(["ffmpeg", "-v", "error", "-ss", f"{start:.3f}", "-i", str(path),
-                          "-t", f"{dur:.3f}", *vf, "-f", "rawvideo", "-pix_fmt", "bgr24", "-"],
-                         stdout=subprocess.PIPE, bufsize=10 ** 8)
-    return p
+    return subprocess.Popen(["ffmpeg", "-v", "error", "-ss", f"{start:.3f}", "-i", str(path),
+                             "-t", f"{dur:.3f}", *vf, "-f", "rawvideo", "-pix_fmt", "bgr24", "-"],
+                            stdout=subprocess.PIPE, bufsize=10 ** 8)
 
 
-def analyze_framing(path, clip, info, detector):
-    """Return per-frame crop centers (source px) or None if a face layout won't work."""
+def analyze_faces(path, clip, info, detector):
+    """One pass over the clip at 640px: scene cuts every frame, faces ~6x/second.
+    Faces are stored as rows [x, y, w, h, conf] in analysis pixels."""
     import cv2
     aw = 640
-    ah = int(round(info["height"] * aw / info["width"] / 2) * 2)
+    ah = even(info["height"] * aw / info["width"])
     detector.setInputSize((aw, ah))
     fps = info["fps"]
     step = max(1, round(fps / 6))
-    dur = clip.end - clip.start
-    p = decode(path, clip.start, dur, aw, ah)
+    p = decode(path, clip.start, clip.end - clip.start, aw, ah)
     fsz = aw * ah * 3
-    cuts, samples, prev_hist, prev_target = [0], {}, None, None
+    cuts, samples, prev_hist = [0], {}, None
+    motion, prev_gray = [], None  # coarse motion grids, to tell gameplay from a static room
     i = 0
     while True:
         raw = p.stdout.read(fsz)
@@ -337,45 +440,100 @@ def analyze_framing(path, clip, info, detector):
         hist = cv2.normalize(hist, hist).flatten()
         if prev_hist is not None and cv2.compareHist(prev_hist, hist, cv2.HISTCMP_CORREL) < 0.5:
             cuts.append(i)
-            prev_target = None
         prev_hist = hist
         if i % step == 0:
+            gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY).astype(np.float32)
+            if prev_gray is not None and i not in cuts:
+                motion.append(np.abs(gray - prev_gray))
+            prev_gray = gray
             _, faces = detector.detect(frame)
-            best = None
-            if faces is not None:
-                bs = -1
-                for f in faces:
-                    x, y, fw, fh, conf = f[0], f[1], f[2], f[3], f[14]
-                    cx = x + fw / 2
-                    sc = fw * fh * conf
-                    if prev_target is not None and abs(cx - prev_target) < aw * 0.12:
-                        sc *= 2.0  # stickiness: don't hop between faces
-                    if fw < aw * 0.025:  # ignore tiny background faces
-                        continue
-                    if sc > bs:
-                        bs, best = sc, cx
-            samples[i] = best
-            if best is not None:
-                prev_target = best
+            arr = np.zeros((0, 5))
+            if faces is not None and len(faces):
+                arr = faces[:, [0, 1, 2, 3, 14]].astype(np.float64)
+                arr = arr[arr[:, 2] >= aw * 0.02]  # ignore tiny background faces
+            samples[i] = arr
         i += 1
     p.wait()
-    nframes = i
-    if nframes == 0:
-        return None, 0.0
-    found = [v for v in samples.values() if v is not None]
-    coverage = len(found) / max(1, len(samples))
-    if coverage < 0.35:
-        return None, coverage
+    mgrid = np.mean(motion, axis=0) if motion else np.zeros((36, 64))
+    return dict(aw=aw, ah=ah, fps=fps, n=i, cuts=sorted(set(cuts)), samples=samples, motion=mgrid)
 
-    # build per-frame target, holding last position across short gaps
-    tgt = np.full(nframes, np.nan)
-    for k, v in samples.items():
-        if v is not None:
-            tgt[k] = v
-    cuts = sorted(set(cuts)) + [nframes]
-    cw = info["height"] * 9 / 16 * aw / info["width"]  # crop width in analysis px
+
+def _largest(f):
+    return f[np.argmax(f[:, 2] * f[:, 3])]
+
+
+def detect_screen(A):
+    """Gameplay/screen with a facecam: one small face that barely moves, off-centre."""
+    aw, ah, S = A["aw"], A["ah"], list(A["samples"].values())
+    pts = [_largest(f) for f in S if len(f)]
+    pts = [p for p in pts if p[2] < aw * 0.12]
+    if len(pts) < 0.6 * len(S) or len(pts) < 3:
+        return None
+    P = np.array(pts)
+    cx, cy = P[:, 0] + P[:, 2] / 2, P[:, 1] + P[:, 3] / 2
+    if cx.std() > aw * 0.03 or cy.std() > ah * 0.03:
+        return None
+    mx, my = np.median(cx), np.median(cy)
+    if abs(mx - aw / 2) < aw * 0.2 and abs(my - ah / 2) < ah * 0.2:
+        return None  # a small face in the middle is a wide shot, not a facecam
+    # the rest of the frame must be moving (gameplay / screen), not a static room
+    g = A["motion"].copy()
+    gx, gy = 64 / aw, 36 / ah
+    fw, fh = np.median(P[:, 2]), np.median(P[:, 3])
+    x0, x1 = int((mx - 1.5 * fw) * gx), int((mx + 1.5 * fw) * gx) + 1
+    y0, y1 = int((my - 1.5 * fh) * gy), int((my + 1.5 * fh) * gy) + 1
+    g[max(0, y0):y1, max(0, x0):x1] = np.nan
+    A["screen_motion"] = float(np.nanmean(g))
+    if A["screen_motion"] < SCREEN_MOTION:
+        return None
+    return np.array([mx, my, np.median(P[:, 2]), np.median(P[:, 3])])
+
+
+def detect_split(A):
+    """Two people who can't both fit in one vertical crop (podcast two-shot)."""
+    aw, ah, S = A["aw"], A["ah"], list(A["samples"].values())
+    cw = ah * 9 / 16
+    pairs = []
+    for f in S:
+        big = f[f[:, 2] >= aw * 0.04]
+        if len(big) < 2:
+            continue
+        two = big[np.argsort(-(big[:, 2] * big[:, 3]))[:2]]
+        two = two[np.argsort(two[:, 0])]
+        c = two[:, 0] + two[:, 2] / 2
+        if c[1] - c[0] > cw * 0.8:
+            pairs.append(two)
+    if len(pairs) < 0.5 * len(S) or len(pairs) < 3:
+        return None
+    P = np.array(pairs)  # (k, 2, 5)
+    med = np.median(P, axis=0)
+    return [np.array([m[0] + m[2] / 2, m[1] + m[3] / 2, m[2], m[3]]) for m in med]
+
+
+def track_path(A):
+    """Per-frame crop centre for a single subject, like a calm camera operator."""
+    aw, ah, fps, n = A["aw"], A["ah"], A["fps"], A["n"]
+    cw = ah * 9 / 16
     half = cw / 2
-    out = np.zeros(nframes)
+    cutset = set(A["cuts"])
+    tgt = np.full(n, np.nan)
+    prev = None
+    for i in sorted(A["samples"]):
+        if any(c <= i and c > i - max(1, round(fps / 6)) for c in cutset if c):
+            prev = None  # new shot: free to choose a new subject
+        best, bs = None, -1
+        for x, y, w, h, conf in A["samples"][i]:
+            cx = x + w / 2
+            sc = w * h * conf
+            if prev is not None and abs(cx - prev) < aw * 0.12:
+                sc *= 2.0  # stickiness: don't hop between faces
+            if sc > bs:
+                bs, best = sc, cx
+        if best is not None:
+            tgt[i] = best
+            prev = best
+    cuts = A["cuts"] + [n]
+    out = np.zeros(n)
     for a, b in zip(cuts[:-1], cuts[1:]):
         seg = tgt[a:b].copy()
         idx = np.where(~np.isnan(seg))[0]
@@ -415,19 +573,89 @@ def analyze_framing(path, clip, info, detector):
                 pad = np.pad(cam[u:v], (3 * sig, 3 * sig), mode="edge")
                 cam[u:v] = np.convolve(pad, ker, mode="valid")
         out[a:b] = np.clip(cam, half, aw - half)
-    return out * info["width"] / aw, coverage
+    return out
 
 
-# --------------------------------------------------------------------------- render
+def plan_layout(A, info, forced):
+    """Decide how to frame a clip. Returns (layout, data, face_coverage)."""
+    S = list(A["samples"].values())
+    cov = sum(1 for f in S if len(f)) / max(1, len(S))
+    sx = info["width"] / A["aw"]
+    if forced in ("auto", "screen"):
+        cam = detect_screen(A)
+        if cam is not None:
+            return "screen", cam * sx, cov
+        if forced == "screen":
+            pts = [_largest(f) for f in S if len(f)]
+            if pts:
+                m = np.median(np.array(pts), axis=0)
+                return "screen", np.array([m[0] + m[2] / 2, m[1] + m[3] / 2, m[2], m[3]]) * sx, cov
+            log("no facecam found; using blur layout")
+            return "blur", None, cov
+    if forced in ("auto", "split"):
+        two = detect_split(A)
+        if two is not None:
+            return "split", [t * sx for t in two], cov
+        if forced == "split":
+            log("couldn't find two people; falling back to tracking")
+    if forced in ("auto", "track", "split"):
+        if cov >= 0.35 or forced in ("track", "split"):
+            return "track", track_path(A) * sx, cov
+    return "blur", None, cov
+
+
+# --------------------------------------------------------------------------- framing: render
 def enc_args(out, crf):
     return ["-c:v", "libx264", "-preset", "veryfast", "-crf", str(crf), "-pix_fmt", "yuv420p",
             "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart", str(out)]
 
 
+def face_crop(face, aspect, info, scale, up=0.42):
+    """A crop box (x, y, w, h) of the given aspect around a face (cx, cy, fw, fh)."""
+    sw, sh = info["width"], info["height"]
+    cx, cy, fw, fh = face
+    h = min(sh, max(fh * scale, sh * 0.3))
+    w = h * aspect
+    if w > sw:
+        w, h = sw, sw / aspect
+    x = np.clip(cx - w / 2, 0, sw - w)
+    y = np.clip(cy - h * up, 0, sh - h)
+    return even(x), even(y), even(w), even(h)
+
+
+def render_static(path, clip, info, panels, out, W, crf):
+    """Stack fixed crops vertically. panels = [((x, y, w, h), panel_height), ...]"""
+    k = len(panels)
+    fc = f"[0:v]split={k}" + "".join(f"[s{i}]" for i in range(k)) + ";"
+    for i, ((x, y, w, h), ph) in enumerate(panels):
+        fc += f"[s{i}]crop={w}:{h}:{x}:{y},scale={W}:{ph}:force_original_aspect_ratio=increase,crop={W}:{ph}[p{i}];"
+    fc += "".join(f"[p{i}]" for i in range(k)) + f"vstack={k},setsar=1[v]"
+    run(["ffmpeg", "-v", "error", "-y", "-ss", f"{clip.start:.3f}", "-i", str(path),
+         "-t", f"{clip.end - clip.start:.3f}", "-filter_complex", fc, "-map", "[v]",
+         *(["-map", "0:a"] if info["has_audio"] else []), *enc_args(out, crf)])
+
+
+def render_split(path, clip, info, faces, out, W, H, crf):
+    ph = even(H / 2)
+    boxes = [face_crop(f, W / ph, info, scale=3.5) for f in faces]
+    render_static(path, clip, info, [(boxes[0], ph), (boxes[1], H - ph)], out, W, crf)
+
+
+def render_screen(path, clip, info, cam, out, W, H, crf):
+    sw, sh = info["width"], info["height"]
+    top = even(H * 0.35)
+    bottom = H - top
+    cam_box = face_crop(cam, W / top, info, scale=3.0, up=0.5)
+    gh = sh
+    gw = min(sw, gh * W / bottom)
+    gx = even((sw - gw) / 2)
+    render_static(path, clip, info, [(cam_box, top), ((gx, 0, even(gw), even(gh)), bottom)], out, W, crf)
+
+
 def render_track(path, clip, info, centers, out, W, H, crf):
     import cv2
     sw, sh, fps = info["width"], info["height"], info["fps"]
-    cw = int(round(sh * 9 / 16 / 2) * 2)
+    cw = even(sh * 9 / 16)
     dur = clip.end - clip.start
     dec = decode(path, clip.start, dur)
     audio = ["-ss", f"{clip.start:.3f}", "-t", f"{dur:.3f}", "-i", str(path)] if info["has_audio"] else []
@@ -444,8 +672,7 @@ def render_track(path, clip, info, centers, out, W, H, crf):
         frame = np.frombuffer(raw, np.uint8).reshape(sh, sw, 3)
         cx = centers[min(i, len(centers) - 1)]
         x0 = int(np.clip(round(cx - cw / 2), 0, sw - cw))
-        crop = frame[:, x0:x0 + cw]
-        enc.stdin.write(cv2.resize(crop, (W, H), interpolation=cv2.INTER_AREA).tobytes())
+        enc.stdin.write(cv2.resize(frame[:, x0:x0 + cw], (W, H), interpolation=cv2.INTER_AREA).tobytes())
         i += 1
     dec.wait()
     enc.stdin.close()
@@ -453,13 +680,12 @@ def render_track(path, clip, info, centers, out, W, H, crf):
 
 
 def render_blur(path, clip, info, out, W, H, crf):
-    dur = clip.end - clip.start
     fc = (f"[0:v]split[a][b];[a]scale={W}:{H}:force_original_aspect_ratio=increase,"
           f"crop={W}:{H},gblur=sigma=40,eq=brightness=-0.12[bg];"
           f"[b]scale={W}:{H}:force_original_aspect_ratio=decrease[fg];"
           f"[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1[v]")
     run(["ffmpeg", "-v", "error", "-y", "-ss", f"{clip.start:.3f}", "-i", str(path),
-         "-t", f"{dur:.3f}", "-filter_complex", fc, "-map", "[v]",
+         "-t", f"{clip.end - clip.start:.3f}", "-filter_complex", fc, "-map", "[v]",
          *(["-map", "0:a"] if info["has_audio"] else []), *enc_args(out, crf)])
 
 
@@ -471,11 +697,17 @@ def main():
     ap.add_argument("-n", "--count", type=int, default=5, help="number of clips")
     ap.add_argument("--min", type=float, default=15, help="min clip length (s)")
     ap.add_argument("--max", type=float, default=60, help="max clip length (s)")
-    ap.add_argument("--layout", choices=["auto", "track", "blur"], default="auto",
-                    help="auto: follow the face, blurred background if no clear face")
+    ap.add_argument("--layout", choices=LAYOUTS, default="auto",
+                    help="auto picks per clip: screen (facecam+gameplay), split (two people), "
+                         "track (follow one face) or blur")
+    ap.add_argument("--chat", default=None, help="chat replay file (YouTube live_chat.json, "
+                    "TwitchDownloader JSON, or '[hh:mm:ss] msg' text). Auto-fetched for YouTube URLs")
+    ap.add_argument("--no-chat", action="store_true", help="ignore chat even if available")
+    ap.add_argument("--chat-delay", type=float, default=4.0, help="seconds chat lags behind the moment")
+    ap.add_argument("--chat-weight", type=float, default=0.55, help="0-1, how much chat counts vs audio")
     ap.add_argument("--whisper", default="small", help="Whisper model (tiny/base/small/medium/large-v3)")
     ap.add_argument("--lang", default=None, help="language code, e.g. en (default: detect)")
-    ap.add_argument("--no-transcribe", action="store_true", help="audio-only scoring (fastest)")
+    ap.add_argument("--no-transcribe", action="store_true", help="skip transcription (fastest)")
     ap.add_argument("--llm", action="store_true", help="re-rank candidates with Claude (needs ANTHROPIC_API_KEY)")
     ap.add_argument("--start", type=float, default=0, help="only look after this time (s)")
     ap.add_argument("--end", type=float, default=None, help="only look before this time (s)")
@@ -488,22 +720,41 @@ def main():
     work = out / ".work"
     work.mkdir(parents=True, exist_ok=True)
     W, H = (int(v) for v in a.size.lower().split("x"))
+    is_url = bool(re.match(r"^https?://", a.input))
 
-    src = ingest(a.input, work)
+    src, chat_file = ingest(a.input, work, want_chat=not a.no_chat and not a.chat)
+    if a.chat and not a.no_chat:
+        chat_file = Path(a.chat).expanduser()
+        if not chat_file.exists():
+            sys.exit(f"chat file not found: {chat_file}")
     info = probe(src)
     log(f"{src.name}: {info['width']}x{info['height']} @ {info['fps']:.2f}fps, {info['duration'] / 60:.1f} min")
     if info["duration"] < a.min:
         sys.exit("video is shorter than --min")
 
-    # 1) score the whole video from audio
+    # 1) score the whole video from audio (+ chat)
+    n = int(info["duration"] / RES)
     if info["has_audio"]:
         log("measuring loudness")
-        excite, silent = audio_features(loudness_curve(src))
+        audio_ex, silent = audio_features(loudness_curve(src))
+        audio_ex, silent = np.resize(audio_ex, n), np.resize(silent, n)
     else:
-        n = int(info["duration"] / RES)
-        excite, silent = np.ones(n), np.zeros(n, bool)
+        audio_ex, silent = np.ones(n), np.zeros(n, bool)
+    excite, chat_ex = audio_ex, None
+    if chat_file:
+        msgs = load_chat(chat_file)
+        log(f"chat: {len(msgs)} messages from {chat_file.name}")
+        if len(msgs) >= 50:
+            chat_ex = chat_features(msgs, n, a.chat_delay)
+            cw_ = min(max(a.chat_weight, 0), 1)
+            # both spiking together is the strongest signal
+            excite = np.clip((1 - cw_) * audio_ex + cw_ * chat_ex + 0.4 * np.minimum(audio_ex, chat_ex), 0, 8)
+            if not info["has_audio"]:
+                excite = chat_ex
+        else:
+            log("too few chat messages to use")
     lo, hi = int(a.start / RES), int((a.end or info["duration"]) / RES)
-    mask = np.zeros(len(excite), bool)
+    mask = np.zeros(n, bool)
     mask[lo:hi] = True
     excite = np.where(mask, excite, 0)
     silent = np.where(mask, silent, True)
@@ -524,6 +775,10 @@ def main():
                 log("transcription unavailable, snapping to silences instead:", ex)
                 transcribe = False
         snap(c, segs, silent, a.min, a.max, info["duration"])
+        i0, i1 = int(c.start / RES), max(int(c.start / RES) + 1, int(c.end / RES))
+        c.parts["audio_peak"] = round(float(audio_ex[i0:i1].max()) / 8, 3)
+        if chat_ex is not None:
+            c.parts["chat_peak"] = round(float(chat_ex[i0:i1].max()) / 8, 3)
 
     if a.llm and not a.no_transcribe:
         pool = llm_rerank(pool)
@@ -532,31 +787,33 @@ def main():
 
     # 3) frame + render
     detector = None
+    vertical_src = info["width"] / info["height"] <= 0.75
     for k, c in enumerate(clips, 1):
         name = f"clip_{k:02d}_{int(c.start // 60):02d}m{int(c.start % 60):02d}s.mp4"
         c.file = name
-        centers = None
-        if a.layout != "blur" and not a.analyze_only:
+        layout, data = "blur", None
+        if not vertical_src and a.layout != "blur":
             detector = detector or get_detector(Path(__file__).resolve().parent / "models")
-            centers, cov = analyze_framing(src, c, info, detector)
+            A = analyze_faces(src, c, info, detector)
+            layout, data, cov = plan_layout(A, info, a.layout)
             c.parts["face_coverage"] = round(cov, 2)
-            if centers is None and a.layout == "track":
-                centers = np.full(1, info["width"] / 2)
-        if info["width"] / info["height"] <= 0.75:  # already vertical
-            centers = None
-        c.layout = "track" if centers is not None else "blur"
+        c.layout = layout
         if a.analyze_only:
             continue
-        log(f"rendering {name} ({c.end - c.start:.0f}s, {c.layout}, score {c.score:.2f})")
-        if centers is not None:
-            render_track(src, c, info, centers, out / name, W, H, a.crf)
+        log(f"rendering {name} ({c.end - c.start:.0f}s, {layout}, score {c.score:.2f})")
+        if layout == "track":
+            render_track(src, c, info, data, out / name, W, H, a.crf)
+        elif layout == "split":
+            render_split(src, c, info, data, out / name, W, H, a.crf)
+        elif layout == "screen":
+            render_screen(src, c, info, data, out / name, W, H, a.crf)
         else:
             render_blur(src, c, info, out / name, W, H, a.crf)
 
-    report = dict(source=str(src), settings=vars(a),
+    report = dict(source=str(src), chat=str(chat_file) if chat_file else None, settings=vars(a),
                   clips=[{**asdict(c), "score": round(c.score, 4)} for c in clips])
     (out / "clips.json").write_text(json.dumps(report, indent=2))
-    if not re.match(r"^https?://", a.input):
+    if not is_url:
         shutil.rmtree(work, ignore_errors=True)  # keep downloaded sources for re-runs
     log(f"done: {len(clips)} clips in {out}")
     for c in clips:
