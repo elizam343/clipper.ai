@@ -418,7 +418,13 @@ def choose_clips(pool, count, lo, hi):
     else:
         best = ranked[0].score if ranked else 0
         good = [c for c in ranked if best > 0 and c.score >= GOOD_REL * best]
-    return ranked[:max(lo, min(hi, len(good)))]
+    picked = good[:hi]
+    for c in ranked:                     # too few good ones: top up with the next best
+        if len(picked) >= lo:
+            break
+        if c not in picked:
+            picked.append(c)
+    return picked
 
 
 def pick(cands, k, gap=5.0):
