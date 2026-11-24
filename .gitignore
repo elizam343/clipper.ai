@@ -4,3 +4,5 @@ __pycache__/
 models/
 clips/
 *.mp4
+*.info.json
+.DS_Store

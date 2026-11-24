@@ -56,26 +56,38 @@ def even(x):
 
 # --------------------------------------------------------------------------- ingest
 def ingest(src: str, workdir: Path, want_chat: bool):
-    """Return (video_path, chat_path_or_None)."""
+    """Return (video_path, chat_path_or_None, metadata with title / creator / date)."""
     if re.match(r"^https?://", src):
         if not shutil.which("yt-dlp"):
             sys.exit("yt-dlp is not installed: pip install yt-dlp")
         log("downloading", src)
-        out = workdir / "source.%(ext)s"
-        run(["yt-dlp", "-f", "bv*[height<=1080]+ba/b[height<=1080]/b",
-             "--merge-output-format", "mp4", "-o", str(out), src])
-        vids = [f for f in sorted(workdir.glob("source.*")) if f.suffix in (".mp4", ".mkv", ".webm", ".mov")]
-        if not vids:
+        # one file per video id, so different URLs never reuse each other's download
+        out = workdir / "%(id)s.%(ext)s"
+        res = subprocess.run(["yt-dlp", "-f", "bv*[height<=1080]+ba/b[height<=1080]/b",
+                              "--merge-output-format", "mp4", "--write-info-json",
+                              "--no-simulate", "--print", "after_move:filepath",
+                              "-o", str(out), src], stdout=subprocess.PIPE, text=True)
+        lines = [l for l in res.stdout.splitlines() if l.strip()]
+        if res.returncode or not lines or not Path(lines[-1]).exists():
             sys.exit("download failed")
+        vid = Path(lines[-1])
+        meta = {}
+        info = vid.with_suffix(".info.json")
+        if info.exists():
+            j = json.loads(info.read_text())
+            d = j.get("upload_date") or ""
+            meta = dict(title=j.get("title"), creator=j.get("channel") or j.get("uploader"),
+                        date=f"{d[:4]}-{d[4:6]}-{d[6:]}" if len(d) == 8 else None,
+                        url=j.get("webpage_url") or src, id=j.get("id"))
         chat = None
         if want_chat and "youtu" in src:
             log("fetching chat replay (if the video has one)")
             subprocess.run(["yt-dlp", "--skip-download", "--write-subs", "--sub-langs", "live_chat",
-                            "-o", str(workdir / "source.%(ext)s"), src],
+                            "-o", str(out), src],
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            found = sorted(workdir.glob("source*.live_chat.json"))
+            found = sorted(workdir.glob(f"{vid.stem}*.live_chat.json"))
             chat = found[0] if found else None
-        return vids[0], chat
+        return vid, chat, meta
     p = Path(src).expanduser().resolve()
     if not p.exists():
         sys.exit(f"not found: {p}")
@@ -86,7 +98,33 @@ def ingest(src: str, workdir: Path, want_chat: bool):
             if cand.exists():
                 chat = cand
                 break
-    return p, chat
+    return p, chat, local_meta(p)
+
+
+def local_meta(p: Path) -> dict:
+    """Title / creator / date for a local file, from its tags or the file itself."""
+    from datetime import date
+    tags = {}
+    try:
+        tags = json.loads(subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format_tags", "-of", "json", str(p)],
+            capture_output=True, text=True).stdout).get("format", {}).get("tags", {})
+        tags = {k.lower(): v for k, v in tags.items()}
+    except Exception:
+        pass
+    created = (tags.get("creation_time") or "")[:10] or \
+        date.fromtimestamp(p.stat().st_mtime).isoformat()
+    return dict(title=tags.get("title") or p.stem,
+                creator=tags.get("artist") or tags.get("author"), date=created)
+
+
+def folder_name(meta: dict) -> str:
+    """'<title> - <creator> - <YYYY-MM-DD>', safe for macOS/Windows/Linux paths."""
+    parts = [meta.get("title"), meta.get("creator"), meta.get("date")]
+    name = " - ".join(str(x).strip() for x in parts if x and str(x).strip())
+    name = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "", name)
+    name = re.sub(r"\s+", " ", name).strip(" .")
+    return name[:150].rstrip(" .") or "clips"
 
 
 def probe(path: Path) -> dict:
@@ -259,6 +297,7 @@ class Clip:
     llm: dict | None = None
     layout: str = ""
     file: str = ""
+    files: list = field(default_factory=list)
 
 
 def score_windows(excite, silent, min_len, max_len):
@@ -689,6 +728,36 @@ def render_blur(path, clip, info, out, W, H, crf):
          *(["-map", "0:a"] if info["has_audio"] else []), *enc_args(out, crf)])
 
 
+def render_landscape(path, clip, info, out, W, H, crf):
+    """Keep the whole frame (no crop): fit into WxH, letterbox if the aspect differs."""
+    vf = (f"scale={W}:{H}:force_original_aspect_ratio=decrease,"
+          f"pad={W}:{H}:(ow-iw)/2:(oh-ih)/2,setsar=1")
+    run(["ffmpeg", "-v", "error", "-y", "-ss", f"{clip.start:.3f}", "-i", str(path),
+         "-t", f"{clip.end - clip.start:.3f}", "-vf", vf, "-map", "0:v:0",
+         *(["-map", "0:a:0"] if info["has_audio"] else []), *enc_args(out, crf)])
+
+
+def ask_format() -> str:
+    """Ask which orientation to render. Only called when stdin is a terminal."""
+    print("\nWhere is the funny part of these clips?\n"
+          "  1) portrait   - one person/face; crop to vertical 9:16 (Shorts/TikTok/Reels)\n"
+          "  2) landscape  - the joke needs the whole frame; keep 16:9, no crop\n"
+          "  3) both       - render each clip both ways and pick later",
+          file=sys.stderr)
+    choices = {"1": "portrait", "2": "landscape", "3": "both",
+               "p": "portrait", "l": "landscape", "b": "both"}
+    while True:
+        try:
+            ans = input("Choose 1/2/3 [1]: ").strip().lower()
+        except EOFError:
+            return "portrait"
+        if not ans:
+            return "portrait"
+        if ans in choices or ans in choices.values():
+            return choices.get(ans, ans)
+        print("Please type 1, 2 or 3.", file=sys.stderr)
+
+
 # --------------------------------------------------------------------------- main
 def main():
     ap = argparse.ArgumentParser(description="Turn a long video into vertical short clips.")
@@ -711,18 +780,31 @@ def main():
     ap.add_argument("--llm", action="store_true", help="re-rank candidates with Claude (needs ANTHROPIC_API_KEY)")
     ap.add_argument("--start", type=float, default=0, help="only look after this time (s)")
     ap.add_argument("--end", type=float, default=None, help="only look before this time (s)")
-    ap.add_argument("--size", default="1080x1920", help="output size WxH")
+    ap.add_argument("--format", choices=["portrait", "landscape", "both"], default=None,
+                    help="portrait: 9:16 crop; landscape: full 16:9 frame; both: render each "
+                         "clip twice (default: ask when run in a terminal, else portrait)")
+    ap.add_argument("--size", default="1080x1920", help="portrait output size WxH "
+                    "(landscape uses the same size turned sideways, e.g. 1920x1080)")
     ap.add_argument("--crf", type=int, default=20, help="x264 quality (lower = better)")
     ap.add_argument("--analyze-only", action="store_true", help="write clips.json, don't render")
     a = ap.parse_args()
+    if a.format is None:
+        a.format = ask_format() if (sys.stdin.isatty() and not a.analyze_only) else "portrait"
+    log(f"format: {a.format}")
+    portrait = a.format in ("portrait", "both")
+    landscape = a.format in ("landscape", "both")
 
-    out = Path(a.out).expanduser().resolve()
-    work = out / ".work"
+    base = Path(a.out).expanduser().resolve()
+    work = base / ".work"
     work.mkdir(parents=True, exist_ok=True)
     W, H = (int(v) for v in a.size.lower().split("x"))
-    is_url = bool(re.match(r"^https?://", a.input))
+    LW, LH = max(W, H), min(W, H)
 
-    src, chat_file = ingest(a.input, work, want_chat=not a.no_chat and not a.chat)
+    src, chat_file, meta = ingest(a.input, work, want_chat=not a.no_chat and not a.chat)
+    # every video gets its own folder: "<title> - <creator> - <upload date>"
+    out = base / folder_name(meta)
+    out.mkdir(parents=True, exist_ok=True)
+    log(f"output folder: {out}")
     if a.chat and not a.no_chat:
         chat_file = Path(a.chat).expanduser()
         if not chat_file.exists():
@@ -789,8 +871,17 @@ def main():
     detector = None
     vertical_src = info["width"] / info["height"] <= 0.75
     for k, c in enumerate(clips, 1):
-        name = f"clip_{k:02d}_{int(c.start // 60):02d}m{int(c.start % 60):02d}s.mp4"
-        c.file = name
+        stem = f"clip_{k:02d}_{int(c.start // 60):02d}m{int(c.start % 60):02d}s"
+        name = f"{stem}.mp4"
+        lname = f"{stem}_landscape.mp4"
+        c.files = ([name] if portrait else []) + ([lname] if landscape else [])
+        c.file = c.files[0]
+        if landscape and not a.analyze_only:
+            log(f"rendering {lname} ({c.end - c.start:.0f}s, landscape, score {c.score:.2f})")
+            render_landscape(src, c, info, out / lname, LW, LH, a.crf)
+        if not portrait:
+            c.layout = "landscape"
+            continue
         layout, data = "blur", None
         if not vertical_src and a.layout != "blur":
             detector = detector or get_detector(Path(__file__).resolve().parent / "models")
@@ -810,14 +901,17 @@ def main():
         else:
             render_blur(src, c, info, out / name, W, H, a.crf)
 
-    report = dict(source=str(src), chat=str(chat_file) if chat_file else None, settings=vars(a),
-                  clips=[{**asdict(c), "score": round(c.score, 4)} for c in clips])
+    report = dict(source=str(src), video=meta, chat=str(chat_file) if chat_file else None,
+                  settings=vars(a), clips=[{**asdict(c), "score": round(c.score, 4)} for c in clips])
     (out / "clips.json").write_text(json.dumps(report, indent=2))
-    if not is_url:
-        shutil.rmtree(work, ignore_errors=True)  # keep downloaded sources for re-runs
+    # .work is shared and keeps downloaded videos for re-runs; only drop it if empty
+    try:
+        work.rmdir()
+    except OSError:
+        pass
     log(f"done: {len(clips)} clips in {out}")
     for c in clips:
-        print(f"{c.file}\t{c.start:.1f}-{c.end:.1f}s\tscore {c.score:.2f}\t{c.layout}")
+        print(f"{', '.join(c.files)}\t{c.start:.1f}-{c.end:.1f}s\tscore {c.score:.2f}\t{c.layout}")
 
 
 if __name__ == "__main__":

@@ -49,9 +49,31 @@ python clipper.py gameplay.mp4 --layout screen
 # let Claude re-rank the best candidates by transcript
 export ANTHROPIC_API_KEY=sk-ant-...
 python clipper.py podcast.mp4 --llm
+
+# keep the whole 16:9 frame (the joke needs both sides of the screen)
+python clipper.py "https://www.youtube.com/watch?v=..." --format landscape
+
+# render every clip both ways and decide later
+python clipper.py stream.mp4 --format both
 ```
 
 Only clip videos you have the rights to.
+
+### Portrait or landscape (`--format portrait|landscape|both`)
+
+If you run clipper in a terminal without `--format`, it asks you first:
+
+```
+Where is the funny part of these clips?
+  1) portrait   - one person/face; crop to vertical 9:16 (Shorts/TikTok/Reels)
+  2) landscape  - the joke needs the whole frame; keep 16:9, no crop
+  3) both       - render each clip both ways and pick later
+Choose 1/2/3 [1]:
+```
+
+In scripts or other non-interactive runs it uses portrait without asking. Portrait
+clips use the layouts below. Landscape clips are 1920×1080 with nothing cropped
+(letterboxed if the source isn't 16:9) and end in `_landscape.mp4`.
 
 ### Chat
 
@@ -88,9 +110,25 @@ because chat reacts after the moment. It's then blended with audio using
 
 ## Output
 
-`clips/clip_01_12m34s.mp4 …` plus `clips/clips.json`. The JSON lists each clip's times,
-score, score breakdown (peak, intensity, hook, payoff, dead air, audio peak, chat peak,
-face coverage), transcript and layout. Use it to see why a moment was picked.
+Each video gets its own folder inside `-o`, named after the video's title, creator
+and upload date:
+
+```
+clips/
+  OPERATE ON BILLY! Tonsil, Ear and Heart Surgery - jacksepticeye - 2015-03-05/
+    clip_01_00m21s.mp4
+    clip_01_00m21s_landscape.mp4     (with --format landscape or both)
+    clips.json
+  .work/                             (downloaded videos, reused on re-runs)
+```
+
+For a local file the folder uses the file's title tag (or its file name), the artist
+tag if it has one, and the creation date.
+
+`clips.json` has the video's title, creator, date and URL. It also lists each clip's
+times, score, score breakdown (peak, intensity, hook, payoff, dead air, audio peak,
+chat peak, face coverage), transcript, layout and files. Use it to see why a moment
+was picked.
 
 ## How it works
 
