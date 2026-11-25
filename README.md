@@ -204,6 +204,37 @@ because chat reacts after the moment. It's then blended with audio using
   dead zone, glides when the person moves, and cuts instantly on scene changes.
 - **blur**: no clear face. The full frame sits over a blurred copy of itself.
 
+## Uploading to YouTube (`upload.py`)
+
+```bash
+python upload.py "clips/<video folder>" "clips/<another>" --dry-run   # see the plan
+python upload.py "clips/<video folder>" "clips/<another>"             # upload
+```
+
+Uploads each clip with its title, description, hashtags and tags from its `.txt` (so
+your edits are used) and its thumbnail. Clips from several folders are interleaved so
+one video's clips aren't posted back to back, and each gets a slot: 1pm, 4pm and 7pm
+(`--times`, `--per-day`), starting after the last slot already in the posting log. The
+slot and the Short's link go into `clips/posting_log.csv`, and clips already there with
+a link are skipped. At most 6 go up per run (`--limit`), about YouTube's daily API quota.
+
+**Private until you publish.** YouTube keeps videos uploaded through a new, unaudited
+API project private, so clips go up as private and you set each publish time in
+Studio (the slot is in the log). If your API project passes YouTube's audit,
+`--schedule` makes YouTube publish each one at its slot. Custom thumbnails need a
+phone-verified channel; if one can't be set, the upload still goes through.
+
+**Setup (once):**
+
+1. In [Google Cloud Console](https://console.cloud.google.com/), create a project and
+   enable **YouTube Data API v3**.
+2. Set up the OAuth consent screen (External, add yourself as a test user), then create
+   an **OAuth client ID** of type **Desktop app** and download its JSON.
+3. Save it as `~/.config/clipper/client_secret.json`.
+4. `pip install google-api-python-client google-auth-oauthlib`
+5. The first real run opens your browser to sign in to the channel; the token is saved
+   in `~/.config/clipper/`. Neither file is ever inside this repo.
+
 ## Output
 
 Each video gets its own folder inside `-o`, named after the video's title, creator

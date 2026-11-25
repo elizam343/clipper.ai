@@ -5,3 +5,5 @@ yt-dlp
 anthropic  # optional: --llm re-rank and Claude-written captions
 brotli>=1.2  # older Brotli crashes the Anthropic SDK when it reads compressed replies
 pillow  # burned-in captions, title card
+google-api-python-client  # optional: upload.py
+google-auth-oauthlib      # optional: upload.py
