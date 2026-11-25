@@ -72,13 +72,14 @@ def clip_entries(folder: Path):
 
 
 def interleave(groups):
-    """Round-robin across folders so one source video's clips are spread out."""
-    out, i = [], 0
-    while any(i < len(g) for g in groups):
-        out += [g[i] for g in groups if i < len(g)]
-        i += 1
-    return out
-
+    """Spread each folder's clips evenly over the whole plan, so one source video's clips
+    are never bunched together even when it has many more clips than the others."""
+    total = sum(len(g) for g in groups)
+    placed = []
+    for gi, g in enumerate(groups):
+        for i, e in enumerate(g):
+            placed.append(((i + 0.5) * total / len(g), gi, e))
+    return [e for _, _, e in sorted(placed, key=lambda x: (x[0], x[1]))]
 
 def read_log(path: Path):
     if not path.exists():
@@ -87,9 +88,17 @@ def read_log(path: Path):
         return list(csv.DictReader(f))
 
 
+def day_quota(per_day: str):
+    """'3' -> always 3 a day; '2-3' -> alternate 3 and 2 a day."""
+    lo, _, hi = str(per_day).partition("-")
+    lo, hi = int(lo), int(hi or lo)
+    return lambda k: hi if k % 2 == 0 else lo
+
+
 def next_slots(n, rows, times, per_day, now=None):
-    """The next n posting slots: `times` each day, at most per_day a day, after now and
-    after the last slot already in the log."""
+    """The next n posting slots: `times` each day (per_day of them, e.g. '3' or '2-3'),
+    after now and after the last slot already in the log."""
+    quota = day_quota(per_day)
     now = now or dt.datetime.now().astimezone()
     taken = []
     for r in rows:
@@ -101,18 +110,22 @@ def next_slots(n, rows, times, per_day, now=None):
     per_day_count = {}
     for t in taken:
         per_day_count[t.date()] = per_day_count.get(t.date(), 0) + 1
-    slots, day = [], start.date()
+    slots, day, k = [], start.date(), 0
     while len(slots) < n:
-        for hhmm in times[:per_day]:
+        q = quota(k)
+        # spread the day's posts over the listed times: 2 a day -> first and last
+        day_times = times[:q] if q >= len(times) or q != 2 else [times[0], times[-1]]
+        for hhmm in day_times:
             h, m = map(int, hhmm.split(":"))
             t = dt.datetime.combine(day, dt.time(h, m)).astimezone()
-            if t < start or per_day_count.get(day, 0) >= per_day:
+            if t < start or per_day_count.get(day, 0) >= q:
                 continue
             slots.append(t)
             per_day_count[day] = per_day_count.get(day, 0) + 1
             if len(slots) == n:
                 break
         day += dt.timedelta(days=1)
+        k += 1
     return slots
 
 
@@ -168,10 +181,60 @@ def upload_one(yt, e, cap, slot, args):
     return vid
 
 
+def thumb_data_uri(path: Path, width=360) -> str:
+    """A small JPEG copy of the thumbnail inside the page, so the preview works anywhere."""
+    import base64
+    import io
+    from PIL import Image
+    im = Image.open(path).convert("RGB")
+    im.thumbnail((width, width * 2))
+    buf = io.BytesIO()
+    im.save(buf, "JPEG", quality=80)
+    return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
+
+
+def write_preview(out: Path, entries, slots, args):
+    """A page laid out like the posting plan: one row per day, a card per Short."""
+    import html
+    days = {}
+    for e, slot in zip(entries, slots):
+        days.setdefault(slot.date(), []).append((e, slot, read_caption(e["txt"])))
+    esc = html.escape
+    cards = []
+    for day, items in days.items():
+        row = []
+        for e, slot, cap in items:
+            img = (f'<img src="{thumb_data_uri(e["thumb"])}" alt="">'
+                   if e["thumb"] else '<div class="noimg">no thumbnail</div>')
+            desc = esc(cap["description"]).replace("\n", "<br>")
+            row.append(f"""<article><div class="time">{slot:%-I:%M %p}</div>{img}
+<h3>{esc(cap['title'])}</h3><p class="desc">{desc}</p>
+<p class="tags">{esc(' '.join(cap['hashtags']))}</p>
+<p class="meta">{len(cap['tags'])} tags · {esc(e['folder'][:60])}</p></article>""")
+        cards.append(f'<section><h2>{day:%A, %B %-d}</h2><div class="row">{"".join(row)}</div></section>')
+    mode = "scheduled by YouTube" if args.schedule else f"uploaded {args.privacy}; set times in Studio"
+    out.write_text(f"""<!doctype html><meta charset="utf-8"><title>Upload plan</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+body{{font:15px/1.4 -apple-system,system-ui,sans-serif;background:#0f0f0f;color:#f1f1f1;margin:0;padding:24px}}
+h1{{font-size:22px;margin:0 0 4px}} .sub{{color:#aaa;margin:0 0 24px}}
+h2{{font-size:16px;color:#aaa;font-weight:600;margin:28px 0 12px}}
+.row{{display:flex;gap:16px;overflow-x:auto;padding-bottom:8px}}
+article{{flex:0 0 220px;background:#1f1f1f;border-radius:12px;padding:10px}}
+img,.noimg{{width:100%;aspect-ratio:9/16;object-fit:cover;border-radius:8px;background:#000;display:block}}
+.noimg{{display:flex;align-items:center;justify-content:center;color:#777}}
+.time{{font-weight:700;color:#3ea6ff;margin:0 0 8px}}
+h3{{font-size:15px;margin:10px 0 6px}} .desc{{color:#ddd;font-size:13px;margin:0 0 6px;word-break:break-word}}
+.tags{{color:#3ea6ff;font-size:13px;margin:0 0 6px}} .meta{{color:#888;font-size:12px;margin:0}}
+</style><h1>Upload plan: {len(entries)} Shorts over {len(days)} days</h1>
+<p class="sub">{esc(mode)}</p>{"".join(cards)}""")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("folders", nargs="+", help="clipper output folders (clips/<video>)")
-    ap.add_argument("--per-day", type=int, default=3, help="clips per day (default 3)")
+    ap.add_argument("--per-day", default="3", help="clips per day: 3, or a range like 2-3 "
+                    "(alternates 3 and 2)")
     ap.add_argument("--times", default="13:00,16:00,19:00", help="local posting times, comma-separated")
     ap.add_argument("--limit", type=int, default=6,
                     help="upload at most this many now (default 6, about YouTube's daily API quota)")
@@ -181,6 +244,9 @@ def main():
     ap.add_argument("--category", default="20", help="YouTube category id (20 Gaming, 24 Entertainment)")
     ap.add_argument("--log", default=None, help="posting log (default: clips/posting_log.csv)")
     ap.add_argument("--dry-run", action="store_true", help="show the plan, upload nothing")
+    ap.add_argument("--preview", nargs="?", const="", default=None,
+                    help="also write an HTML preview of the schedule (thumbnails, titles, "
+                         "descriptions); default clips/upload_preview.html")
     args = ap.parse_args()
 
     folders = [Path(f) for f in args.folders]
@@ -199,6 +265,10 @@ def main():
         cap = read_caption(e["txt"])
         print(f"{slot:%a %b %d %H:%M}  {cap['title']}  [{e['folder'][:30]}]"
               f"{'' if e['thumb'] else '  (no thumbnail)'}")
+    if args.preview is not None:
+        out = Path(args.preview) if args.preview else log_path.parent / "upload_preview.html"
+        write_preview(out, entries, slots, args)
+        log(f"preview: {out}")
     if args.dry_run:
         log("dry run: nothing uploaded")
         return

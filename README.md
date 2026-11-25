@@ -207,14 +207,18 @@ because chat reacts after the moment. It's then blended with audio using
 ## Uploading to YouTube (`upload.py`)
 
 ```bash
-python upload.py "clips/<video folder>" "clips/<another>" --dry-run   # see the plan
+python upload.py "clips/<video folder>" "clips/<another>" --dry-run --preview   # see the plan
+python upload.py clips/*/ --per-day 2-3 --dry-run --preview   # 2-3 a day, every unposted folder
 python upload.py "clips/<video folder>" "clips/<another>"             # upload
 ```
 
 Uploads each clip with its title, description, hashtags and tags from its `.txt` (so
-your edits are used) and its thumbnail. Clips from several folders are interleaved so
-one video's clips aren't posted back to back, and each gets a slot: 1pm, 4pm and 7pm
-(`--times`, `--per-day`), starting after the last slot already in the posting log. The
+your edits are used) and its thumbnail. Clips from several folders are spread evenly over
+the plan, so one video's clips aren't bunched together, and each gets a slot: 1pm, 4pm and 7pm
+(`--times`, `--per-day 3`, or `--per-day 2-3` to alternate 3- and 2-clip days; 2-clip
+days use the first and last time), starting after the last slot already in the posting
+log. `--preview` writes `clips/upload_preview.html`, the plan laid out by day with each
+Short's thumbnail, title, description and hashtags, so you can check it before uploading. The
 slot and the Short's link go into `clips/posting_log.csv`, and clips already there with
 a link are skipped. At most 6 go up per run (`--limit`), about YouTube's daily API quota.
 
