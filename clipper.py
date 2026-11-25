@@ -1224,7 +1224,7 @@ def landscape_box(info, W, H):
 
 
 def caption_chunks(words, t0, t1):
-    """Group words into short on-screen phrases (up to 3 words), each with its word timings.
+    """Group words into short on-screen phrases (up to 4 short words), each with its word timings.
     Swear words are swapped or dropped, like the post captions."""
     out, cur = [], []
     for ws, we, w in words:
@@ -1232,9 +1232,10 @@ def caption_chunks(words, t0, t1):
         if not w:
             continue
         ws, we = max(ws, t0) - t0, min(we, t1) - t0
-        if we <= ws:
+        if ws >= t1 - t0:
             continue
-        if cur and (len(cur) >= 3 or sum(len(x[2]) for x in cur) + len(w) > 16
+        we = max(we, ws + 0.08)   # fast repeated speech can get zero-length words
+        if cur and (len(cur) >= 4 or sum(len(x[2]) for x in cur) + len(w) > 16
                     or ws - cur[-1][1] > 0.6 or cur[-1][2][-1] in ".!?,"):
             out.append(cur)
             cur = []
@@ -1349,16 +1350,16 @@ def finish(video: Path, clip: Clip, box, W, H, a):
             states = caption_images(caption_chunks(clip.words, clip.start, clip.end), W, band_h, tmp)
             if states:
                 from PIL import Image
-                blank = tmp / "blank.png"
+                blank = tmp / "blank.png"    # the list names files relative to itself
                 Image.new("RGBA", (W, band_h), (0, 0, 0, 0)).save(blank)
                 lines, t = [], 0.0
                 for f, s0, s1 in states:
                     if s0 > t + 0.01:
-                        lines.append(f"file '{blank}'\nduration {s0 - t:.3f}")
-                    lines.append(f"file '{f}'\nduration {s1 - max(s0, t):.3f}")
+                        lines.append(f"file '{blank.name}'\nduration {s0 - t:.3f}")
+                    lines.append(f"file '{f.name}'\nduration {s1 - max(s0, t):.3f}")
                     t = max(s1, t)
-                lines.append(f"file '{blank}'\nduration {max(dur - t, 0) + 1:.3f}")
-                lines.append(f"file '{blank}'")
+                lines.append(f"file '{blank.name}'\nduration {max(dur - t, 0) + 1:.3f}")
+                lines.append(f"file '{blank.name}'")
                 lst = tmp / "captions.txt"
                 lst.write_text("\n".join(lines) + "\n")
                 inputs += ["-f", "concat", "-safe", "0", "-i", str(lst)]
