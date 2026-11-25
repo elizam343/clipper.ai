@@ -235,10 +235,11 @@ phone-verified channel; if one can't be set, the upload still goes through.
    enable **YouTube Data API v3**.
 2. Set up the OAuth consent screen (External, add yourself as a test user), then create
    an **OAuth client ID** of type **Desktop app** and download its JSON.
-3. Save it as `~/.config/clipper/client_secret.json`.
+3. Save it as `secrets/client_secret.json` inside the clipper folder (`secrets/` is
+   git-ignored, so it's never committed).
 4. `pip install google-api-python-client google-auth-oauthlib`
 5. The first real run opens your browser to sign in to the channel; the token is saved
-   in `~/.config/clipper/`. Neither file is ever inside this repo.
+   in `secrets/` too. Neither file is ever committed.
 
 ## Output
 

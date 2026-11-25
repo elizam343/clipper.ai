@@ -15,9 +15,9 @@ the log). If your API project has passed YouTube's audit, --schedule makes YouTu
 publish each clip at its slot by itself.
 
 Setup (once): create an OAuth client ("Desktop app") for the YouTube Data API v3 in Google
-Cloud Console and save its JSON as ~/.config/clipper/client_secret.json. The first run
-opens a browser to sign in to your channel; the token is saved next to it. Neither file
-is ever inside the repo.
+Cloud Console and save its JSON as secrets/client_secret.json in this folder. The first
+run opens a browser to sign in to your channel; the token is saved next to it. secrets/
+is git-ignored, so neither file is ever committed.
 """
 from __future__ import annotations
 
@@ -28,7 +28,8 @@ import json
 import sys
 from pathlib import Path
 
-CONFIG = Path.home() / ".config" / "clipper"
+# OAuth client secret and token live in clipper/secrets/ (git-ignored, never committed)
+CONFIG = Path(__file__).resolve().parent / "secrets"
 SECRET = CONFIG / "client_secret.json"
 TOKEN = CONFIG / "youtube_token.json"
 SCOPES = ["https://www.googleapis.com/auth/youtube.upload",
