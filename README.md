@@ -110,6 +110,14 @@ short line. Use it if Studio lets you upload a Shorts thumbnail. `--overlay titl
 image. Needs Pillow
 (`pip install pillow`).
 
+### Cold open (`--no-teaser` to turn off)
+
+The first second decides whether people swipe away, so each clip opens with a 2–3.5 s
+preview of its best moment, then plays from the top. The preview is the clip's **hook**
+(the same line as on the thumbnail) when it can be found in the transcript, otherwise
+the clip's most exciting moment. Clips whose best moment is already in the first few
+seconds don't get one. The burned-in captions follow along.
+
 ### Post captions (`--captions auto|basic|off`)
 
 Every clip gets a caption you can paste when you post it: a title, a description,
@@ -210,6 +218,15 @@ clips/
 
 For a local file the folder uses the file's title tag (or its file name), the artist
 tag if it has one, and the creation date.
+
+### Posting log
+
+Every run adds its clips to `clips/posting_log.csv`: title, hook, length, cold-open
+length, Claude's rating, score, and where in the source video it's from. Fill in
+`posted_at`, `youtube_url`, `views`, `stayed_to_watch_pct` (Studio's "viewed vs. swiped
+away") and `avg_pct_viewed` as you post. Once there are a few dozen clips with numbers,
+it shows which kinds of clips actually do well. Re-runs replace their own rows but keep
+anything you typed in.
 
 `clips.json` has the video's title, creator, date and URL. It also lists each clip's
 times, score, score breakdown (peak, intensity, hook, payoff, dead air, audio peak,

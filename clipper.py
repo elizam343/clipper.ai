@@ -319,6 +319,7 @@ class Clip:
     files: list = field(default_factory=list)
     caption: dict | None = None
     words: list = field(default_factory=list)   # (start, end, word), absolute times
+    peak_t: float = 0.0                          # the most exciting moment, absolute time
 
 
 def grow_moments(excite, silent, min_len, max_len, k_seeds=60, gap=5.0, lead=2.0, tail=1.5):
@@ -1334,6 +1335,12 @@ def title_image(title, W, tmp: Path):
     return f, img.height
 
 
+def has_audio_stream(video: Path) -> bool:
+    out = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "a", "-show_entries",
+                          "stream=index", "-of", "csv=p=0", str(video)], capture_output=True, text=True)
+    return bool(out.stdout.strip())
+
+
 def hook_image(hook, W, tmp: Path):
     """The hook line as big yellow outlined text with quotes, up to 2 lines; (path, height)."""
     from PIL import Image, ImageDraw
@@ -1367,6 +1374,45 @@ def hook_image(hook, W, tmp: Path):
     return f, h
 
 
+def teaser_window(clip: Clip):
+    """The 1-3.5 s to replay at the very start: the hook line if it can be found in the
+    clip's words, else the most exciting moment. None if it's already in the opening."""
+    norm = lambda x: re.sub(r"[^a-z0-9']", "", clean_swears(x).lower())
+    words = [(ws, we, norm(w)) for ws, we, w in clip.words]
+    words = [w for w in words if w[2]]
+    hook = [norm(w) for w in ((clip.caption or {}).get("hook") or "").split()]
+    hook = [w for w in hook if w]
+    span = None
+    if hook and words:
+        best, at = 0, 0
+        for i in range(len(words)):
+            k = 0
+            while k < len(hook) and i + k < len(words) and words[i + k][2] == hook[k]:
+                k += 1
+            if k > best:
+                best, at = k, i
+        if best >= min(2, len(hook)):
+            span = [words[at][0], words[at + best - 1][1]]
+    if span is None and clip.peak_t:
+        span = [clip.peak_t - 1.2, clip.peak_t + 1.3]
+        inside = [w for w in words if w[1] > span[0] and w[0] < span[1]]
+        if inside:      # don't cut words in half
+            span = [min(span[0], inside[0][0]), max(span[1], inside[-1][1])]
+    if span is None:
+        return None
+    hs, he = span[0] - 0.15, span[1] + 0.35
+    if he - hs < 2.0:   # a quick line: start a bit earlier so the teaser lasts 2 s
+        hs = max(clip.start, he - 2.0, hs - 0.6)
+        he = max(he, hs + 2.0)
+    if he - hs > 3.5:   # end on the last word that fits
+        ends = [w[1] + 0.25 for w in words if hs < w[1] <= hs + 3.25]
+        he = max(ends) if ends else hs + 3.5
+    hs, he = max(hs, clip.start), min(he, clip.end)
+    if hs - clip.start < 2.5 or he - hs < 0.8:
+        return None
+    return hs, he
+
+
 def finish(video: Path, clip: Clip, box, W, H, a):
     """Burn in the title card and word-by-word captions, then save a thumbnail: a clean frame
     with the title card on top and the clip's hook line below."""
@@ -1376,9 +1422,14 @@ def finish(video: Path, clip: Clip, box, W, H, a):
     want_title = a.overlay in ("all", "title") and bool(title)
     want_cap = a.overlay in ("all", "captions") and bool(clip.words)
     want_thumb = not a.no_thumbnail
-    dur = clip.end - clip.start
-    if not (want_title or want_cap or want_thumb):
+    clip_dur = clip.end - clip.start
+    tw = None if getattr(a, "no_teaser", False) else teaser_window(clip)
+    T = (tw[1] - tw[0]) if tw else 0.0
+    dur = clip_dur + T
+    if not (want_title or want_cap or want_thumb or tw):
         return
+    if tw:
+        log(f"  cold open: {T:.1f}s from {tw[0] - clip.start:.1f}s in")
     tmp = video.parent / f".overlay_{video.stem}"
     tmp.mkdir(exist_ok=True)
     band_h = 300
@@ -1393,14 +1444,18 @@ def finish(video: Path, clip: Clip, box, W, H, a):
         ty = max(30, title_bottom - th) if title_bottom else int(H * 0.08)
     frame = tmp / "frame.png"
     if want_thumb:  # grab the frame before captions are burned in
-        run(["ffmpeg", "-v", "error", "-y", "-ss", f"{dur * 0.4:.2f}", "-i", str(video),
+        run(["ffmpeg", "-v", "error", "-y", "-ss", f"{clip_dur * 0.4:.2f}", "-i", str(video),
              "-frames:v", "1", str(frame)])
     inputs, steps = [], []
     if want_title:
         inputs += ["-loop", "1", "-i", str(tf)]
         steps.append(f"overlay=0:{ty}:shortest=1")
     if want_cap:
-        states = caption_images(caption_chunks(clip.words, clip.start, clip.end), W, band_h, tmp)
+        chunks = caption_chunks(clip.words, clip.start, clip.end)
+        if tw:  # teaser captions first, then the clip's, shifted by the teaser length
+            pre = caption_chunks(clip.words, tw[0], tw[1])
+            chunks = pre + [[(ws + T, we + T, w) for ws, we, w in ch] for ch in chunks]
+        states = caption_images(chunks, W, band_h, tmp)
         if states:
             from PIL import Image
             blank = tmp / "blank.png"    # the list names files relative to itself
@@ -1417,17 +1472,28 @@ def finish(video: Path, clip: Clip, box, W, H, a):
             lst.write_text("\n".join(lines) + "\n")
             inputs += ["-f", "concat", "-safe", "0", "-i", str(lst)]
             steps.append(f"overlay=0:{cap_y}:eof_action=pass")
-    if steps:
-        fc, last = [], "0:v"
+    if steps or tw:
+        fc, last, amap = [], "0:v", "0:a?"
+        if tw:  # cold open: the teaser, then the whole clip from the top
+            a0, a1 = tw[0] - clip.start, tw[1] - clip.start
+            base = "base" if steps else "v"
+            fc.append(f"[0:v]split[va][vb];[va]trim={a0:.3f}:{a1:.3f},setpts=PTS-STARTPTS[tv];"
+                      f"[vb]setpts=PTS-STARTPTS[mv];[tv][mv]concat=n=2:v=1:a=0[{base}]")
+            last = base
+            if has_audio_stream(video):
+                fc.append(f"[0:a]asplit[aa][ab];[aa]atrim={a0:.3f}:{a1:.3f},asetpts=PTS-STARTPTS[ta];"
+                          f"[ab]asetpts=PTS-STARTPTS[ma];[ta][ma]concat=n=2:v=0:a=1[aout]")
+                amap = "[aout]"
         for n, st in enumerate(steps, 1):
             lab = "v" if n == len(steps) else f"o{n}"
             fc.append(f"[{last}][{n}:v]{st}[{lab}]")
             last = lab
         tmp_out = video.with_name(f".tmp_{video.name}")
         run(["ffmpeg", "-v", "error", "-y", "-i", str(video), *inputs,
-             "-filter_complex", ";".join(fc), "-map", "[v]", "-map", "0:a?",
+             "-filter_complex", ";".join(fc), "-map", "[v]", "-map", amap,
              "-t", f"{dur:.3f}", *enc_args(tmp_out, a.crf)])
         tmp_out.replace(video)
+    clip.parts["teaser_s"] = round(T, 2)
     if want_thumb and frame.exists():
         from PIL import Image
         img = Image.open(frame).convert("RGBA")
@@ -1439,6 +1505,43 @@ def finish(video: Path, clip: Clip, box, W, H, a):
             img.alpha_composite(Image.open(hf), (0, min(hy, H - hh - 20)))
         img.convert("RGB").save(video.with_name(video.stem + " thumbnail.jpg"), quality=92)
     shutil.rmtree(tmp, ignore_errors=True)
+
+
+LOG_FIELDS = ["added", "video", "file", "title", "hook", "seconds", "teaser_s", "claude",
+              "score", "source_url", "source_at", "posted_at", "youtube_url", "views",
+              "stayed_to_watch_pct", "avg_pct_viewed", "notes"]
+
+
+def update_posting_log(path: Path, folder: str, clips, meta: dict):
+    """Add this run's clips to a CSV you fill in as you post (posted_at, youtube_url, views…),
+    so later we can see which kinds of clips do well. Re-runs replace their own rows but
+    keep anything you typed in."""
+    import csv
+    import datetime as dt
+    rows = []
+    if path.exists():
+        with path.open(newline="") as f:
+            rows = list(csv.DictReader(f))
+    old = {(r["video"], r["file"]): r for r in rows}
+    keep = [r for r in rows if r["video"] != folder]
+    for c in clips:
+        for fname in c.files:
+            prev = old.get((folder, fname), {})
+            keep.append({**{k: prev.get(k, "") for k in LOG_FIELDS},
+                         "added": prev.get("added") or dt.date.today().isoformat(),
+                         "video": folder, "file": fname,
+                         "title": (c.caption or {}).get("title", ""),
+                         "hook": (c.caption or {}).get("hook", ""),
+                         "seconds": round(c.end - c.start + c.parts.get("teaser_s", 0), 1),
+                         "teaser_s": c.parts.get("teaser_s", ""),
+                         "claude": (c.llm or {}).get("score", ""),
+                         "score": round(c.score, 3),
+                         "source_url": meta.get("url", ""),
+                         "source_at": f"{int(c.start // 60)}:{c.start % 60:04.1f}"})
+    with path.open("w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=LOG_FIELDS)
+        w.writeheader()
+        w.writerows(keep)
 
 
 def ask_format() -> str:
@@ -1497,6 +1600,8 @@ def main():
                     "(landscape clips use the same size, letterboxed)")
     ap.add_argument("--overlay", choices=["all", "captions", "title", "none"], default="all",
                     help="burn in word-by-word captions and/or a title bar (default: both)")
+    ap.add_argument("--no-teaser", action="store_true",
+                    help="don't open each clip with a 1-3 s preview of its best line")
     ap.add_argument("--no-thumbnail", action="store_true", help="don't save a thumbnail .jpg per clip")
     ap.add_argument("--crf", type=int, default=20, help="x264 quality (lower = better)")
     ap.add_argument("--analyze-only", action="store_true", help="write clips.json, don't render")
@@ -1582,6 +1687,7 @@ def main():
                    if we > c.start and ws < c.end]
         i0, i1 = int(c.start / RES), max(int(c.start / RES) + 1, int(c.end / RES))
         c.parts["audio_peak"] = round(float(audio_ex[i0:i1].max()) / 8, 3)
+        c.peak_t = round((i0 + int(np.argmax(excite[i0:i1]))) * RES, 2)
         if chat_ex is not None:
             c.parts["chat_peak"] = round(float(chat_ex[i0:i1].max()) / 8, 3)
 
@@ -1641,6 +1747,8 @@ def main():
                   settings=vars(a), clips=[{**{k: v for k, v in asdict(c).items() if k != "words"},
                                  "score": round(c.score, 4)} for c in clips])
     (out / "clips.json").write_text(json.dumps(report, indent=2))
+    if not a.analyze_only and clips:
+        update_posting_log(out.parent / "posting_log.csv", out.name, clips, meta)
     # .work is shared and keeps downloaded videos for re-runs; only drop it if empty
     try:
         work.rmdir()
