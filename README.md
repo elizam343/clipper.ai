@@ -102,9 +102,12 @@ Every clip gets two things burned into the video, so it isn't just a straight re
   cover the game; in portrait clips, in the lower middle. Swears are swapped or dropped
   here too.
 
-Each clip also gets a `… thumbnail.jpg`, a frame from 40% in with the title card on it,
-for Studio if it lets you upload a Shorts thumbnail. `--overlay title` or `captions`
-keeps just one; `none` turns both off; `--no-thumbnail` skips the image. Needs Pillow
+Each clip also gets a `… thumbnail.jpg`: a clean frame (no captions) with the title card
+on top and the clip's **hook** underneath, its most quotable line in big yellow text
+(“IT BROKE THE GAME!”). Claude picks the hook; offline it's the clip's next punchiest
+short line. Use it if Studio lets you upload a Shorts thumbnail. `--overlay title` or
+`captions` keeps just one overlay; `none` turns both off; `--no-thumbnail` skips the
+image. Needs Pillow
 (`pip install pillow`).
 
 ### Post captions (`--captions auto|basic|off`)

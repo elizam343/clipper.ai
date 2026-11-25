@@ -572,6 +572,7 @@ def family_friendly(cap: dict) -> dict:
     if cap["title"]:
         cap["title"] = cap["title"][0].upper() + cap["title"][1:]
     cap["caption"] = clean_swears(cap["caption"])
+    cap["hook"] = clean_swears(cap.get("hook") or "")
     cap["hashtags"] = [t for t in cap["hashtags"] if not has_swear(t.lstrip("#"))]
     cap["tags"] = [t for t in cap.get("tags") or [] if not has_swear(t)]
     return cap
@@ -626,8 +627,12 @@ def basic_caption(clip: Clip, meta: dict) -> dict:
     rep = [w for w in rep if w not in filler]
     for w in list(dict.fromkeys(rep + tw))[:3 if not topic else 2]:
         tags.append(_tag(w))
+    # thumbnail hook: the next punchiest short line that isn't the title
+    norm = lambda x: re.sub(r"\W", "", x.lower())
+    hook_line = next((x for x in short if norm(x) != norm(title) and len(x.split()) <= 7
+                      and not has_swear(x)), "")
     return dict(title=title, caption=caption, hashtags=list(dict.fromkeys(tags)),
-                tags=youtube_tags(clip, meta), source="basic")
+                tags=youtube_tags(clip, meta), hook=hook_line, source="basic")
 
 
 def topic_tag(meta: dict) -> str:
@@ -765,6 +770,9 @@ def claude_captions(clips, meta: dict):
         + "\nFor each clip write a post caption based on what actually happens in its transcript "
         "(the chapter, when given, says which part of the video it's from):\n"
         "- title: a short, punchy title, at most 60 characters; it is also the clip's file name\n"
+        "- hook: the clip's most attention-grabbing line for the thumbnail, quoted word for "
+        "word (or lightly trimmed) from the transcript, 2 to 7 words, different from the title. "
+        "Pick the line people would repeat: a shout, a punchline, a wild claim\n"
         "- caption: the post description. One or two sentences, at most 200 characters, that "
         "say what happens and make people want to watch, in the creator's tone. Quoting the "
         "best line is fine. No hashtags or links in this field\n"
@@ -784,8 +792,9 @@ def claude_captions(clips, meta: dict):
             "properties": {"id": {"type": "integer"}, "title": {"type": "string"},
                            "caption": {"type": "string"},
                            "hashtags": {"type": "array", "items": {"type": "string"}},
-                           "tags": {"type": "array", "items": {"type": "string"}}},
-            "required": ["id", "title", "caption", "hashtags", "tags"],
+                           "tags": {"type": "array", "items": {"type": "string"}},
+                           "hook": {"type": "string"}},
+            "required": ["id", "title", "caption", "hashtags", "tags", "hook"],
             "additionalProperties": False}}},
         "required": ["captions"],
         "additionalProperties": False}
@@ -824,7 +833,7 @@ def claude_captions(clips, meta: dict):
         if meta.get("url"):
             who = meta.get("handle") or meta.get("creator")
             cap += f"\nFull video{' by ' + who if who else ''}: {meta['url']}"
-        out.append(dict(title=d["title"], caption=cap, hashtags=tags,
+        out.append(dict(title=d["title"], caption=cap, hashtags=tags, hook=d.get("hook", ""),
                         tags=youtube_tags(c, meta, first=d["tags"]), source="claude"))
     return out
 
@@ -1325,60 +1334,111 @@ def title_image(title, W, tmp: Path):
     return f, img.height
 
 
+def hook_image(hook, W, tmp: Path):
+    """The hook line as big yellow outlined text with quotes, up to 2 lines; (path, height)."""
+    from PIL import Image, ImageDraw
+    text = "“" + hook.strip().strip('"“”').upper() + "”"
+    probe = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
+    maxw = W * 0.86
+    for size in range(110, 50, -6):
+        font = overlay_font(size)
+        words, lines, cur = text.split(), [], ""
+        for w in words:
+            t = (cur + " " + w).strip()
+            if probe.textlength(t, font=font) <= maxw or not cur:
+                cur = t
+            else:
+                lines.append(cur)
+                cur = w
+        lines.append(cur)
+        if len(lines) <= 2 and all(probe.textlength(l, font=font) <= maxw for l in lines):
+            break
+    gap = 12
+    h = len(lines) * size + (len(lines) - 1) * gap + 40
+    img = Image.new("RGBA", (W, h), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    y = 12
+    for l in lines:
+        d.text((W / 2 - probe.textlength(l, font=font) / 2, y), l, font=font, fill="#FFE000",
+               stroke_width=10, stroke_fill="black")
+        y += size + gap
+    f = tmp / "hook.png"
+    img.save(f)
+    return f, h
+
+
 def finish(video: Path, clip: Clip, box, W, H, a):
-    """Burn in the title card and word-by-word captions, then save a thumbnail."""
-    title = ((clip.caption or {}).get("title") or "").strip()
+    """Burn in the title card and word-by-word captions, then save a thumbnail: a clean frame
+    with the title card on top and the clip's hook line below."""
+    cap = clip.caption or {}
+    title = (cap.get("title") or "").strip()
+    hook = (cap.get("hook") or "").strip()
     want_title = a.overlay in ("all", "title") and bool(title)
     want_cap = a.overlay in ("all", "captions") and bool(clip.words)
+    want_thumb = not a.no_thumbnail
     dur = clip.end - clip.start
-    if want_cap or want_title:
-        tmp = video.parent / f".overlay_{video.stem}"
-        tmp.mkdir(exist_ok=True)
-        band_h = 300
-        if box:     # letterboxed: title in the top bar, captions in the bottom bar
-            top, bottom = box
-            cap_y, title_bottom = bottom + 40, top - 40
-        else:       # full-frame vertical: title near the top, captions in the lower middle
-            cap_y, title_bottom = int(H * 0.62), None
-        inputs, steps = [], []
-        if want_title:
-            tf, th = title_image(title, W, tmp)
-            ty = max(30, title_bottom - th) if title_bottom else int(H * 0.08)
-            inputs += ["-loop", "1", "-i", str(tf)]
-            steps.append(f"overlay=0:{ty}:shortest=1")
-        if want_cap:
-            states = caption_images(caption_chunks(clip.words, clip.start, clip.end), W, band_h, tmp)
-            if states:
-                from PIL import Image
-                blank = tmp / "blank.png"    # the list names files relative to itself
-                Image.new("RGBA", (W, band_h), (0, 0, 0, 0)).save(blank)
-                lines, t = [], 0.0
-                for f, s0, s1 in states:
-                    if s0 > t + 0.01:
-                        lines.append(f"file '{blank.name}'\nduration {s0 - t:.3f}")
-                    lines.append(f"file '{f.name}'\nduration {s1 - max(s0, t):.3f}")
-                    t = max(s1, t)
-                lines.append(f"file '{blank.name}'\nduration {max(dur - t, 0) + 1:.3f}")
-                lines.append(f"file '{blank.name}'")
-                lst = tmp / "captions.txt"
-                lst.write_text("\n".join(lines) + "\n")
-                inputs += ["-f", "concat", "-safe", "0", "-i", str(lst)]
-                steps.append(f"overlay=0:{cap_y}:eof_action=pass")
-        if steps:
-            fc, last = [], "0:v"
-            for n, st in enumerate(steps, 1):
-                lab = "v" if n == len(steps) else f"o{n}"
-                fc.append(f"[{last}][{n}:v]{st}[{lab}]")
-                last = lab
-            tmp_out = video.with_name(f".tmp_{video.name}")
-            run(["ffmpeg", "-v", "error", "-y", "-i", str(video), *inputs,
-                 "-filter_complex", ";".join(fc), "-map", "[v]", "-map", "0:a?",
-                 "-t", f"{dur:.3f}", *enc_args(tmp_out, a.crf)])
-            tmp_out.replace(video)
-        shutil.rmtree(tmp, ignore_errors=True)
-    if not a.no_thumbnail:
+    if not (want_title or want_cap or want_thumb):
+        return
+    tmp = video.parent / f".overlay_{video.stem}"
+    tmp.mkdir(exist_ok=True)
+    band_h = 300
+    if box:     # letterboxed: title in the top bar, captions in the bottom bar
+        top, bottom = box
+        cap_y, title_bottom = bottom + 40, top - 40
+    else:       # full-frame vertical: title near the top, captions in the lower middle
+        cap_y, title_bottom = int(H * 0.62), None
+    tf = None
+    if title:
+        tf, th = title_image(title, W, tmp)
+        ty = max(30, title_bottom - th) if title_bottom else int(H * 0.08)
+    frame = tmp / "frame.png"
+    if want_thumb:  # grab the frame before captions are burned in
         run(["ffmpeg", "-v", "error", "-y", "-ss", f"{dur * 0.4:.2f}", "-i", str(video),
-             "-frames:v", "1", "-q:v", "2", str(video.with_name(video.stem + " thumbnail.jpg"))])
+             "-frames:v", "1", str(frame)])
+    inputs, steps = [], []
+    if want_title:
+        inputs += ["-loop", "1", "-i", str(tf)]
+        steps.append(f"overlay=0:{ty}:shortest=1")
+    if want_cap:
+        states = caption_images(caption_chunks(clip.words, clip.start, clip.end), W, band_h, tmp)
+        if states:
+            from PIL import Image
+            blank = tmp / "blank.png"    # the list names files relative to itself
+            Image.new("RGBA", (W, band_h), (0, 0, 0, 0)).save(blank)
+            lines, t = [], 0.0
+            for f, s0, s1 in states:
+                if s0 > t + 0.01:
+                    lines.append(f"file '{blank.name}'\nduration {s0 - t:.3f}")
+                lines.append(f"file '{f.name}'\nduration {s1 - max(s0, t):.3f}")
+                t = max(s1, t)
+            lines.append(f"file '{blank.name}'\nduration {max(dur - t, 0) + 1:.3f}")
+            lines.append(f"file '{blank.name}'")
+            lst = tmp / "captions.txt"
+            lst.write_text("\n".join(lines) + "\n")
+            inputs += ["-f", "concat", "-safe", "0", "-i", str(lst)]
+            steps.append(f"overlay=0:{cap_y}:eof_action=pass")
+    if steps:
+        fc, last = [], "0:v"
+        for n, st in enumerate(steps, 1):
+            lab = "v" if n == len(steps) else f"o{n}"
+            fc.append(f"[{last}][{n}:v]{st}[{lab}]")
+            last = lab
+        tmp_out = video.with_name(f".tmp_{video.name}")
+        run(["ffmpeg", "-v", "error", "-y", "-i", str(video), *inputs,
+             "-filter_complex", ";".join(fc), "-map", "[v]", "-map", "0:a?",
+             "-t", f"{dur:.3f}", *enc_args(tmp_out, a.crf)])
+        tmp_out.replace(video)
+    if want_thumb and frame.exists():
+        from PIL import Image
+        img = Image.open(frame).convert("RGBA")
+        if tf:
+            img.alpha_composite(Image.open(tf), (0, ty))
+        if hook:
+            hf, hh = hook_image(hook, W, tmp)
+            hy = cap_y if box else int(H * 0.60)
+            img.alpha_composite(Image.open(hf), (0, min(hy, H - hh - 20)))
+        img.convert("RGB").save(video.with_name(video.stem + " thumbnail.jpg"), quality=92)
+    shutil.rmtree(tmp, ignore_errors=True)
 
 
 def ask_format() -> str:
