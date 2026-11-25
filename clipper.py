@@ -318,6 +318,7 @@ class Clip:
     file: str = ""
     files: list = field(default_factory=list)
     caption: dict | None = None
+    words: list = field(default_factory=list)   # (start, end, word), absolute times
 
 
 def grow_moments(excite, silent, min_len, max_len, k_seeds=60, gap=5.0, lead=2.0, tail=1.5):
@@ -1195,6 +1196,190 @@ def render_landscape(path, clip, info, out, W, H, crf):
          *(["-map", "0:a:0"] if info["has_audio"] else []), *enc_args(out, crf)])
 
 
+# --------------------------------------------------------------------------- overlays
+FONT_FILES = [("/System/Library/Fonts/Avenir Next.ttc", 8),        # Heavy
+              ("/System/Library/Fonts/HelveticaNeue.ttc", 1),       # Bold
+              ("/Library/Fonts/Arial Bold.ttf", 0),
+              ("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 0)]
+
+
+def overlay_font(size):
+    from PIL import ImageFont
+    for f, i in FONT_FILES:
+        if Path(f).exists():
+            try:
+                return ImageFont.truetype(f, size, index=i)
+            except OSError:
+                pass
+    return ImageFont.load_default(size)
+
+
+def landscape_box(info, W, H):
+    """Where the letterboxed video sits inside the WxH Short: (top, bottom)."""
+    vh = even(W * info["height"] / info["width"])
+    if vh >= H:
+        return None
+    y0 = (H - vh) // 2
+    return y0, y0 + vh
+
+
+def caption_chunks(words, t0, t1):
+    """Group words into short on-screen phrases (up to 3 words), each with its word timings.
+    Swear words are swapped or dropped, like the post captions."""
+    out, cur = [], []
+    for ws, we, w in words:
+        w = clean_swears(w.strip())
+        if not w:
+            continue
+        ws, we = max(ws, t0) - t0, min(we, t1) - t0
+        if we <= ws:
+            continue
+        if cur and (len(cur) >= 3 or sum(len(x[2]) for x in cur) + len(w) > 16
+                    or ws - cur[-1][1] > 0.6 or cur[-1][2][-1] in ".!?,"):
+            out.append(cur)
+            cur = []
+        cur.append((ws, we, w))
+    if cur:
+        out.append(cur)
+    return out
+
+
+def _draw_centered_lines(draw, lines, font, cx, y, fills, stroke, gap):
+    """Draw lines of (word, fill) runs centered on cx starting at y."""
+    for line in lines:
+        widths = [draw.textlength(w, font=font) for w, _ in line]
+        space = draw.textlength(" ", font=font)
+        x = cx - (sum(widths) + space * (len(line) - 1)) / 2
+        for (w, fill), wd in zip(line, widths):
+            draw.text((x, y), w, font=font, fill=fill, stroke_width=stroke, stroke_fill="black")
+            x += wd + space
+        y += font.size + gap
+
+
+def caption_images(chunks, W, band_h, tmp: Path):
+    """One transparent W x band_h PNG per (phrase, highlighted word) state.
+    Returns concat-demuxer entries [(png, start, end)]."""
+    from PIL import Image, ImageDraw
+    font = overlay_font(92)
+    maxw = W * 0.82
+    states = []
+    for k, ch in enumerate(chunks):
+        words = [w.upper().rstrip(".,") or w.upper() for _, _, w in ch]
+        # wrap onto two lines if the phrase is too wide
+        probe = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
+        total = probe.textlength(" ".join(words), font=font)
+        split = len(words)
+        if total > maxw and len(words) > 1:   # two lines, as even as possible
+            split = min(range(1, len(words)), key=lambda i: max(
+                probe.textlength(" ".join(words[:i]), font=font),
+                probe.textlength(" ".join(words[i:]), font=font)))
+        for j, (ws, we, _) in enumerate(ch):
+            img = Image.new("RGBA", (W, band_h), (0, 0, 0, 0))
+            d = ImageDraw.Draw(img)
+            runs = [(w, "#FFE000" if i == j else "white") for i, w in enumerate(words)]
+            lines = [runs[:split]] + ([runs[split:]] if split < len(runs) else [])
+            hgt = len(lines) * font.size + (len(lines) - 1) * 10
+            _draw_centered_lines(d, lines, font, W / 2, (band_h - hgt) / 2 - 10, None, 9, 10)
+            f = tmp / f"cap_{k:03d}_{j}.png"
+            img.save(f)
+            # the highlight holds until the next word starts (or briefly after the last)
+            nxt = ch[j + 1][0] if j + 1 < len(ch) else (
+                min(we + 0.35, chunks[k + 1][0][0]) if k + 1 < len(chunks) else we + 0.35)
+            states.append((f, ws, max(nxt, ws + 0.04)))
+    return states
+
+
+def title_image(title, W, tmp: Path):
+    """The clip title on a white rounded card, as a transparent PNG; returns (path, height)."""
+    from PIL import Image, ImageDraw
+    maxw = W * 0.84
+    probe = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
+    for size in range(78, 40, -4):
+        font = overlay_font(size)
+        lines, cur = [], ""
+        for w in title.split():
+            t = (cur + " " + w).strip()
+            if probe.textlength(t, font=font) <= maxw - 60 or not cur:
+                cur = t
+            else:
+                lines.append(cur)
+                cur = w
+        lines.append(cur)
+        if len(lines) <= 3 and all(probe.textlength(l, font=font) <= maxw - 60 for l in lines):
+            break
+    gap = 8
+    th = len(lines) * size + (len(lines) - 1) * gap
+    bw = max(probe.textlength(l, font=font) for l in lines) + 70
+    bh = th + 56
+    img = Image.new("RGBA", (W, int(bh) + 8), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    x0 = (W - bw) / 2
+    d.rounded_rectangle((x0, 4, x0 + bw, 4 + bh), radius=26, fill="white")
+    y = 4 + (bh - th) / 2 - size * 0.08
+    for l in lines:
+        d.text((W / 2 - probe.textlength(l, font=font) / 2, y), l, font=font, fill="black")
+        y += size + gap
+    f = tmp / "title.png"
+    img.save(f)
+    return f, img.height
+
+
+def finish(video: Path, clip: Clip, box, W, H, a):
+    """Burn in the title card and word-by-word captions, then save a thumbnail."""
+    title = ((clip.caption or {}).get("title") or "").strip()
+    want_title = a.overlay in ("all", "title") and bool(title)
+    want_cap = a.overlay in ("all", "captions") and bool(clip.words)
+    dur = clip.end - clip.start
+    if want_cap or want_title:
+        tmp = video.parent / f".overlay_{video.stem}"
+        tmp.mkdir(exist_ok=True)
+        band_h = 300
+        if box:     # letterboxed: title in the top bar, captions in the bottom bar
+            top, bottom = box
+            cap_y, title_bottom = bottom + 40, top - 40
+        else:       # full-frame vertical: title near the top, captions in the lower middle
+            cap_y, title_bottom = int(H * 0.62), None
+        inputs, steps = [], []
+        if want_title:
+            tf, th = title_image(title, W, tmp)
+            ty = max(30, title_bottom - th) if title_bottom else int(H * 0.08)
+            inputs += ["-loop", "1", "-i", str(tf)]
+            steps.append(f"overlay=0:{ty}:shortest=1")
+        if want_cap:
+            states = caption_images(caption_chunks(clip.words, clip.start, clip.end), W, band_h, tmp)
+            if states:
+                from PIL import Image
+                blank = tmp / "blank.png"
+                Image.new("RGBA", (W, band_h), (0, 0, 0, 0)).save(blank)
+                lines, t = [], 0.0
+                for f, s0, s1 in states:
+                    if s0 > t + 0.01:
+                        lines.append(f"file '{blank}'\nduration {s0 - t:.3f}")
+                    lines.append(f"file '{f}'\nduration {s1 - max(s0, t):.3f}")
+                    t = max(s1, t)
+                lines.append(f"file '{blank}'\nduration {max(dur - t, 0) + 1:.3f}")
+                lines.append(f"file '{blank}'")
+                lst = tmp / "captions.txt"
+                lst.write_text("\n".join(lines) + "\n")
+                inputs += ["-f", "concat", "-safe", "0", "-i", str(lst)]
+                steps.append(f"overlay=0:{cap_y}:eof_action=pass")
+        if steps:
+            fc, last = [], "0:v"
+            for n, st in enumerate(steps, 1):
+                lab = "v" if n == len(steps) else f"o{n}"
+                fc.append(f"[{last}][{n}:v]{st}[{lab}]")
+                last = lab
+            tmp_out = video.with_name(f".tmp_{video.name}")
+            run(["ffmpeg", "-v", "error", "-y", "-i", str(video), *inputs,
+                 "-filter_complex", ";".join(fc), "-map", "[v]", "-map", "0:a?",
+                 "-t", f"{dur:.3f}", *enc_args(tmp_out, a.crf)])
+            tmp_out.replace(video)
+        shutil.rmtree(tmp, ignore_errors=True)
+    if not a.no_thumbnail:
+        run(["ffmpeg", "-v", "error", "-y", "-ss", f"{dur * 0.4:.2f}", "-i", str(video),
+             "-frames:v", "1", "-q:v", "2", str(video.with_name(video.stem + " thumbnail.jpg"))])
+
+
 def ask_format() -> str:
     """Ask which orientation to render. Only called when stdin is a terminal."""
     print("\nWhere is the funny part of these clips?\n"
@@ -1249,6 +1434,9 @@ def main():
                          "clip twice (default: ask when run in a terminal, else portrait)")
     ap.add_argument("--size", default="1080x1920", help="portrait output size WxH "
                     "(landscape clips use the same size, letterboxed)")
+    ap.add_argument("--overlay", choices=["all", "captions", "title", "none"], default="all",
+                    help="burn in word-by-word captions and/or a title bar (default: both)")
+    ap.add_argument("--no-thumbnail", action="store_true", help="don't save a thumbnail .jpg per clip")
     ap.add_argument("--crf", type=int, default=20, help="x264 quality (lower = better)")
     ap.add_argument("--analyze-only", action="store_true", help="write clips.json, don't render")
     ap.add_argument("--captions", choices=["auto", "basic", "off"], default="auto",
@@ -1329,6 +1517,8 @@ def main():
                 log("transcription unavailable, snapping to silences instead:", ex)
                 transcribe = False
         snap(c, segs, silent, a.min, a.max, info["duration"])
+        c.words = [(ws, we, w) for g in segs for ws, we, w in g["words"]
+                   if we > c.start and ws < c.end]
         i0, i1 = int(c.start / RES), max(int(c.start / RES) + 1, int(c.end / RES))
         c.parts["audio_peak"] = round(float(audio_ex[i0:i1].max()) / 8, 3)
         if chat_ex is not None:
@@ -1362,6 +1552,7 @@ def main():
         if landscape and not a.analyze_only:
             log(f"rendering {lname} ({c.end - c.start:.0f}s, landscape, score {c.score:.2f})")
             render_landscape(src, c, info, out / lname, W, H, a.crf)
+            finish(out / lname, c, landscape_box(info, W, H), W, H, a)
         if not portrait:
             c.layout = "landscape"
             continue
@@ -1383,9 +1574,11 @@ def main():
             render_screen(src, c, info, data, out / name, W, H, a.crf)
         else:
             render_blur(src, c, info, out / name, W, H, a.crf)
+        finish(out / name, c, None, W, H, a)
 
     report = dict(source=str(src), video=meta, chat=str(chat_file) if chat_file else None,
-                  settings=vars(a), clips=[{**asdict(c), "score": round(c.score, 4)} for c in clips])
+                  settings=vars(a), clips=[{**{k: v for k, v in asdict(c).items() if k != "words"},
+                                 "score": round(c.score, 4)} for c in clips])
     (out / "clips.json").write_text(json.dumps(report, indent=2))
     # .work is shared and keeps downloaded videos for re-runs; only drop it if empty
     try:

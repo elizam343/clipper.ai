@@ -91,6 +91,22 @@ clips use the layouts below. Landscape clips are also vertical 1080×1920 Shorts
 with nothing cropped: the whole frame sits in the middle with black bars above and
 below. Their files end in ` (landscape).mp4`.
 
+### On-screen captions and title (`--overlay all|captions|title|none`)
+
+Every clip gets two things burned into the video, so it isn't just a straight reupload:
+
+- **A title card**: the clip's title on a white card. In landscape clips it sits in the
+  black bar above the video; in portrait clips, near the top.
+- **Word-by-word captions**: big white words in short phrases, with the word being spoken
+  in yellow. In landscape clips they go in the black bar under the video, so they never
+  cover the game; in portrait clips, in the lower middle. Swears are swapped or dropped
+  here too.
+
+Each clip also gets a `… thumbnail.jpg`, a frame from 40% in with the title card on it,
+for Studio if it lets you upload a Shorts thumbnail. `--overlay title` or `captions`
+keeps just one; `none` turns both off; `--no-thumbnail` skips the image. Needs Pillow
+(`pip install pillow`).
+
 ### Post captions (`--captions auto|basic|off`)
 
 Every clip gets a caption you can paste when you post it: a title, a description,
@@ -183,6 +199,7 @@ clips/
   OPERATE ON BILLY! Tonsil, Ear and Heart Surgery - jacksepticeye - 2015-03-05/
     04 - God what are we doing.mp4
     04 - God what are we doing (landscape).mp4    (with --format landscape or both)
+    04 - God what are we doing thumbnail.jpg
     04 - God what are we doing.txt                (post caption)
     clips.json
   .work/                             (downloaded videos, reused on re-runs)
