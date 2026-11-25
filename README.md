@@ -110,6 +110,13 @@ caption is saved as a `.txt` with the same name and in `clips.json`.
 Claude also gets the creator's own summary of the video and each clip's chapter, so its
 descriptions say what's happening, not just what was said.
 
+**Captions never swear.** YouTube shows Shorts with profanity in the title or description
+to fewer people, so Claude is told not to swear or quote lines that do, and basic captions
+pick clean lines first. Every caption then goes through a filter either way: swears are
+swapped for mild words ("shit" → "stuff", "what the fuck" → "what the heck"), intensifiers
+like "fucking" are dropped, and hashtags or tags that swear are removed. The clip's audio
+is untouched.
+
 The creator is credited by their YouTube @handle (`@jacksepticeye`), which links to
 their channel and notifies them.
 

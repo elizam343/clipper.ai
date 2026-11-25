@@ -511,6 +511,71 @@ STOP = set("a an and are as at be but by for from has have i if in is it its jus
            "anyway always never maybe pretty kind sort little much very well call".split())
 
 
+# YouTube pushes Shorts less when the title or description swears, so captions stay clean
+SWEAR_PHRASES = [(r"shut the f\w*k up", "shut up"), (r"what the (?:fuck|fck|f\*+k?|hell)", "what the heck"),
+                 (r"holy (?:shit|sh\*+t|crap|fuck)", "holy cow"), (r"the (?:fuck|hell)", "the heck"),
+                 (r"god ?dam(?:n|mit)", "dang"), (r"son of a bitch", "oh man")]
+SWEARS = {"fuck": "heck", "fucks": "", "fucking": "", "fuckin": "",
+          "fucked": "messed", "fucker": "jerk", "motherfucker": "jerk", "motherfucking": "",
+          "shit": "stuff", "shits": "stuff", "shitty": "crummy", "bullshit": "nonsense",
+          "shitting": "", "damn": "dang", "dammit": "dang it", "damnit": "dang it",
+          "hell": "heck", "ass": "butt", "asses": "butts", "asshole": "jerk", "assholes": "jerks",
+          "dumbass": "dummy", "badass": "legend", "bitch": "jerk", "bitches": "jerks",
+          "bitching": "complaining", "bastard": "jerk", "crap": "crud", "crappy": "crummy",
+          "piss": "tick", "pissed": "mad", "dick": "jerk", "dickhead": "jerk", "cock": "jerk",
+          "cunt": "jerk", "prick": "jerk", "wtf": "what the heck", "stfu": "shut up",
+          "omfg": "omg", "lmfao": "lmao", "fml": "ugh"}
+_SWEAR_RE = re.compile(r"\b(" + "|".join(sorted((k for k, v in SWEARS.items() if v != k),
+                                                key=len, reverse=True)) + r")\b", re.I)
+_CENSORED_RE = re.compile(r"\b[a-z]+\*+[a-z*]*\b|\b[a-z]\*{2,}\w*", re.I)   # f***, sh*t
+
+
+# not swearing, but just as bad for reach in a title; basic captions avoid lines with them
+AVOID_RE = re.compile(r"\b(sex|sexy|porn\w*|naked|nude|horny|boobs?|kill yourself|kys)\b", re.I)
+
+
+def has_swear(s: str) -> bool:
+    return bool(AVOID_RE.search(s or "") or _SWEAR_RE.search(s or "") or _CENSORED_RE.search(s or "")
+                or any(re.search(r"\b" + p + r"\b", s or "", re.I) for p, _ in SWEAR_PHRASES))
+
+
+def _match_case(src: str, rep: str) -> str:
+    if not rep:
+        return rep
+    if src.isupper() and len(src) > 1 and (" " not in rep or " " in src):
+        return rep.upper()
+    return rep[0].upper() + rep[1:] if src[0].isupper() else rep
+
+
+def clean_swears(s: str) -> str:
+    """Swap swear words for mild ones ('shit' -> 'stuff') or drop intensifiers ('fucking')."""
+    if not s:
+        return s
+    # a swear on its own as an exclamation ("Shit, he moved!") reads best as "Oh no"
+    s = re.sub(r"(^|“|[.!?”] )(shit|fuck|crap|damn)(?=[,.!?])",
+               lambda m: m.group(1) + _match_case(m.group(2), "oh no"), s, flags=re.I)
+    for p, rep in SWEAR_PHRASES:
+        s = re.sub(r"\b" + p + r"\b", lambda m: _match_case(m.group(0), rep), s, flags=re.I)
+    s = _SWEAR_RE.sub(lambda m: _match_case(m.group(0), SWEARS[m.group(0).lower()]), s)
+    s = _CENSORED_RE.sub("", s)
+    s = re.sub(r"[ \t]{2,}", " ", s)
+    s = re.sub(r" +([,.!?…”])", r"\1", s)
+    s = re.sub(r"(^|\n|“) +", r"\1", s)
+    return s.strip()
+
+
+def family_friendly(cap: dict) -> dict:
+    """Clean the title and description; drop hashtags and tags that swear."""
+    cap = dict(cap)
+    cap["title"] = clean_swears(cap["title"])
+    if cap["title"]:
+        cap["title"] = cap["title"][0].upper() + cap["title"][1:]
+    cap["caption"] = clean_swears(cap["caption"])
+    cap["hashtags"] = [t for t in cap["hashtags"] if not has_swear(t.lstrip("#"))]
+    cap["tags"] = [t for t in cap.get("tags") or [] if not has_swear(t)]
+    return cap
+
+
 def _tag(s: str) -> str:
     return "#" + re.sub(r"[^0-9A-Za-z]", "", s).lower()
 
@@ -521,13 +586,14 @@ def basic_caption(clip: Clip, meta: dict) -> dict:
     # the clip often opens mid-sentence, so use the first complete-looking sentence
     sents = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
     full = [s for s in sents if len(s.split()) >= 5 and s[0].isupper()]
+    full.sort(key=has_swear)
     hook = (full or sents or [""])[0]
     if len(hook) > 100:
         hook = hook[:97].rsplit(" ", 1)[0] + "..."
     # title: the clip's punchiest short line (exclamations and questions first), so every
     # clip gets its own title; fall back to the video title when there's no transcript
     short = [s for s in sents if 3 <= len(s.split()) <= 9 and len(s) <= 60 and s[0].isalpha()]
-    short.sort(key=lambda s: (s[-1] not in "!?", -len(s.split())))
+    short.sort(key=lambda s: (has_swear(s), s[-1] not in "!?", -len(s.split())))
     if short:
         title = short[0].rstrip(".")
         title = title[0].upper() + title[1:]
@@ -543,7 +609,8 @@ def basic_caption(clip: Clip, meta: dict) -> dict:
     # hashtags: words from the title, then words the clip keeps repeating
     tw = [w.lower() for w in re.findall(r"[A-Za-z]{4,}", meta.get("title") or "")
           if w.lower() not in STOP]
-    cw = [w.lower() for w in re.findall(r"[A-Za-z]{5,}", text) if w.lower() not in STOP]
+    cw = [w.lower() for w in re.findall(r"[A-Za-z]{5,}", text)
+          if w.lower() not in STOP and not has_swear(w)]
     rep = sorted({w for w in cw if cw.count(w) >= 2}, key=lambda w: -cw.count(w))
     tags = ["#shorts"]
     if meta.get("creator"):
@@ -645,7 +712,7 @@ def basic_description(clip: Clip, meta: dict, sents, hook: str, title: str) -> s
     # quote: a quotable line other than the title, exclamations and questions first
     cands = [s for s in sents if 4 <= len(s.split()) <= 18 and len(s) <= 110
              and s[0].isalpha() and not same(s)]
-    cands.sort(key=lambda s: (s[-1] not in "!?", abs(len(s.split()) - 10)))
+    cands.sort(key=lambda s: (has_swear(s), s[-1] not in "!?", abs(len(s.split()) - 10)))
     if cands:
         quote = cands[0]
     elif sents:
@@ -704,6 +771,10 @@ def claude_captions(clips, meta: dict):
         "- tags: 8 to 15 YouTube Studio tags for this clip (plain keywords or phrases, no #): "
         "what happens in it, the game or topic, and the creator. Prefer the source video's "
         "tags that fit this clip: " + json.dumps((meta.get("tags") or [])[:40]) + "\n"
+        "Keep the title, caption, hashtags and tags free of profanity and swear words, even "
+        "when the transcript swears and even censored (no f***, sh*t, wtf); YouTube pushes "
+        "Shorts that swear in the title or description to fewer people. Avoid sexual "
+        "references too. Don't quote a line that swears; describe it instead.\n"
         "Don't invent events that aren't in the transcript.\n\n" + json.dumps(items))
     schema = {
         "type": "object",
@@ -762,6 +833,7 @@ def make_captions(clips, meta: dict, use_claude: bool):
     caps = claude_captions(clips, meta) if use_claude else None
     if caps is None:
         caps = [basic_caption(c, meta) for c in clips]
+    caps = [family_friendly(cap) for cap in caps]
     for c, cap in zip(clips, caps):
         c.caption = cap
     log(f"captions: {len(clips)} written ({caps[0]['source'] if caps else 'none'})")
