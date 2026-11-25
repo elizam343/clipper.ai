@@ -95,9 +95,10 @@ def day_quota(per_day: str):
     return lambda k: hi if k % 2 == 0 else lo
 
 
-def next_slots(n, rows, times, per_day, now=None):
-    """The next n posting slots: `times` each day (per_day of them, e.g. '3' or '2-3'),
-    after now and after the last slot already in the log."""
+def next_slots(n, rows, times, per_day, now=None, min_gap_h=2.0):
+    """The next n posting slots: `times` each day (per_day of them, e.g. '3' or '2-3').
+    Posts already in the log (published or scheduled) count toward their day's total,
+    and no new slot is closer than min_gap_h hours to one of them."""
     quota = day_quota(per_day)
     now = now or dt.datetime.now().astimezone()
     taken = []
@@ -106,28 +107,30 @@ def next_slots(n, rows, times, per_day, now=None):
             taken.append(dt.datetime.fromisoformat(r["posted_at"]).astimezone())
         except (KeyError, ValueError, TypeError):
             pass
-    start = max([now + dt.timedelta(hours=1)] + [t + dt.timedelta(minutes=1) for t in taken])
-    per_day_count = {}
+    start = now + dt.timedelta(hours=1)
+    count = {}
     for t in taken:
-        per_day_count[t.date()] = per_day_count.get(t.date(), 0) + 1
+        count[t.date()] = count.get(t.date(), 0) + 1
+    gap = dt.timedelta(hours=min_gap_h)
     slots, day, k = [], start.date(), 0
     while len(slots) < n:
         q = quota(k)
         # spread the day's posts over the listed times: 2 a day -> first and last
-        day_times = times[:q] if q >= len(times) or q != 2 else [times[0], times[-1]]
+        day_times = times if q != 2 or len(times) <= 2 else [times[0], times[-1]]
+        if count.get(day, 0) >= 2 and q != 2:   # a day with scheduled posts: try every time
+            day_times = times
         for hhmm in day_times:
+            if count.get(day, 0) >= q or len(slots) == n:
+                break
             h, m = map(int, hhmm.split(":"))
             t = dt.datetime.combine(day, dt.time(h, m)).astimezone()
-            if t < start or per_day_count.get(day, 0) >= q:
+            if t < start or any(abs(t - x) < gap for x in taken + slots):
                 continue
             slots.append(t)
-            per_day_count[day] = per_day_count.get(day, 0) + 1
-            if len(slots) == n:
-                break
+            count[day] = count.get(day, 0) + 1
         day += dt.timedelta(days=1)
         k += 1
     return slots
-
 
 def youtube_client():
     from google.auth.transport.requests import Request

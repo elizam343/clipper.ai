@@ -216,8 +216,9 @@ Uploads each clip with its title, description, hashtags and tags from its `.txt`
 your edits are used) and its thumbnail. Clips from several folders are spread evenly over
 the plan, so one video's clips aren't bunched together, and each gets a slot: 1pm, 4pm and 7pm
 (`--times`, `--per-day 3`, or `--per-day 2-3` to alternate 3- and 2-clip days; 2-clip
-days use the first and last time), starting after the last slot already in the posting
-log. `--preview` writes `clips/upload_preview.html`, the plan laid out by day with each
+days use the first and last time). Posts already in the posting log (published or
+scheduled by hand, with a `posted_at` time) count toward their day, and new slots stay
+at least 2 hours away from them. `--preview` writes `clips/upload_preview.html`, the plan laid out by day with each
 Short's thumbnail, title, description and hashtags, so you can check it before uploading. The
 slot and the Short's link go into `clips/posting_log.csv`, and clips already there with
 a link are skipped. At most 6 go up per run (`--limit`), about YouTube's daily API quota.
