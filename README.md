@@ -125,6 +125,10 @@ and hashtags. **The clip's file is named after its title**, numbered in
 the order the clips appear in the video (`04 - God what are we doing.mp4`). The
 caption is saved as a `.txt` with the same name and in `clips.json`.
 
+Descriptions are kept short, since Shorts viewers rarely open them: one line saying what
+happens (with the words people search for), then `🎥 Full video by @creator: <link>`.
+Only the first 3 hashtags show (above the title), so it's `#shorts` plus the 2 best.
+
 - **auto** (default): Claude writes the captions from each clip's transcript in one
   request. Needs `pip install anthropic` and an API key
   (`export ANTHROPIC_API_KEY=sk-ant-...`). Without them, clipper falls back to basic.

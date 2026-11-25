@@ -574,7 +574,8 @@ def family_friendly(cap: dict) -> dict:
         cap["title"] = cap["title"][0].upper() + cap["title"][1:]
     cap["caption"] = clean_swears(cap["caption"])
     cap["hook"] = clean_swears(cap.get("hook") or "")
-    cap["hashtags"] = [t for t in cap["hashtags"] if not has_swear(t.lstrip("#"))]
+    # only the first 3 hashtags show (above the title), so keep #shorts plus the 2 best
+    cap["hashtags"] = [t for t in cap["hashtags"] if not has_swear(t.lstrip("#"))][:3]
     cap["tags"] = [t for t in cap.get("tags") or [] if not has_swear(t)]
     return cap
 
@@ -743,14 +744,23 @@ def basic_description(clip: Clip, meta: dict, sents, hook: str, title: str) -> s
     src = (f"{who}'s “{vt}”" if who and vt else f"“{vt}”" if vt else who or "")
     ch = chapter_at(meta, (clip.start + clip.end) / 2)
     context = (f"{ch}, from {src}." if ch and src else f"From {src}." if src else "")
+    # Shorts descriptions stay short: one line, then the credit
     lines = []
     if quote:
         lines.append(f"“{quote}”")
-    if context:
+    elif context:
         lines.append(context)
-    if meta.get("url"):
-        lines.append(f"Full video: {meta['url']}")
+    if credit_line(meta):
+        lines.append(credit_line(meta))
     return "\n".join(lines) or title
+
+
+def credit_line(meta: dict) -> str:
+    """'🎥 Full video by @handle: <url>'"""
+    if not meta.get("url"):
+        return ""
+    who = meta.get("handle") or meta.get("creator")
+    return f"🎥 Full video{' by ' + who if who else ''}: {meta['url']}"
 
 
 def claude_captions(clips, meta: dict):
@@ -774,10 +784,11 @@ def claude_captions(clips, meta: dict):
         "- hook: the clip's most attention-grabbing line for the thumbnail, quoted word for "
         "word (or lightly trimmed) from the transcript, 2 to 7 words, different from the title. "
         "Pick the line people would repeat: a shout, a punchline, a wild claim\n"
-        "- caption: the post description. One or two sentences, at most 200 characters, that "
-        "say what happens and make people want to watch, in the creator's tone. Quoting the "
-        "best line is fine. No hashtags or links in this field\n"
-        "- hashtags: 3 to 6 relevant hashtags, each starting with #\n"
+        "- caption: the post description. ONE short line, at most 100 characters, that says "
+        "what happens and makes people want to watch, in the creator's tone, with the words "
+        "people would search for (who, what game). An emoji is fine. No hashtags or links\n"
+        "- hashtags: the 2 most relevant hashtags (the game/topic and the creator), each "
+        "starting with #\n"
         "- tags: 8 to 15 YouTube Studio tags for this clip (plain keywords or phrases, no #): "
         "what happens in it, the game or topic, and the creator. Prefer the source video's "
         "tags that fit this clip: " + json.dumps((meta.get("tags") or [])[:40]) + "\n"
@@ -830,10 +841,9 @@ def claude_captions(clips, meta: dict):
         tags = [t if t.startswith("#") else "#" + t for t in d["hashtags"]]
         # #shorts helps YouTube treat the upload as a Short
         tags = ["#shorts"] + [t for t in tags if t.lower() != "#shorts"]
-        cap = d["caption"].strip()
-        if meta.get("url"):
-            who = meta.get("handle") or meta.get("creator")
-            cap += f"\nFull video{' by ' + who if who else ''}: {meta['url']}"
+        cap = re.sub(r"\s*#\w+", "", d["caption"]).strip()   # hashtags go in their own line
+        if credit_line(meta):
+            cap += "\n" + credit_line(meta)
         out.append(dict(title=d["title"], caption=cap, hashtags=tags, hook=d.get("hook", ""),
                         tags=youtube_tags(c, meta, first=d["tags"]), source="claude"))
     return out
