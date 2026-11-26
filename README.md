@@ -269,6 +269,31 @@ because chat reacts after the moment. It's then blended with audio using
   dead zone, glides when the person moves, and cuts instantly on scene changes.
 - **blur**: no clear face. The full frame sits over a blurred copy of itself.
 
+## Clipper.app
+
+A small Mac app that does the whole loop without the terminal:
+
+- **New clips:** paste a link, pick landscape or portrait, and it runs clipper in the
+  background with live progress. You get a notification when the clips are ready.
+- **Review & upload:** every clip with its thumbnail, a player, and its title and
+  description, which you can edit (saved into the clip's `.txt`). Skip clips you don't
+  want. Tick the videos to include, see the planned slots, and upload to YouTube
+  (private, the same rules as `upload.py`). Folders whose clips are all posted can be
+  moved to `#COMPLETED`.
+- **Calendar:** everything in the posting log with a time, by day, with views, and a
+  "Set in Studio" mark on private uploads that still need their publish time.
+
+```bash
+pip install flask pywebview
+bash app/make_app.sh            # builds ~/Applications/Clipper.app with the icon
+```
+
+Open it from Applications or Spotlight. It runs a server on `127.0.0.1` only, and each
+launch gets a random token the page must send, so other websites can't use it. It uses
+your shell setup (`~/.zshrc`) for the Claude API key and Homebrew's ffmpeg. Logs are in
+`~/Library/Logs/Clipper.log`. `python3 app/main.py --browser` opens the same page in your
+browser instead. Re-run `make_app.sh` if you move the clipper folder.
+
 ## Uploading to YouTube (`upload.py`)
 
 ```bash
