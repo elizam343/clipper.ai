@@ -6,3 +6,4 @@ clips/
 *.mp4
 *.info.json
 .DS_Store
+secrets/

@@ -169,7 +169,72 @@ Full video: https://www.youtube.com/watch?v=zFk_JjsTMKc
 #shorts #jacksepticeye #drilling #operate #billy
 
 Tags: jacksepticeye, jacksepticeye funny moments, jacksepticeye shorts, ear surgery, ...
+
+TikTok / Reels:
+Drilling into Billy's head was a bad idea 😬 #jacksepticeye #gaming #funny
+🎥 Full video: @jacksepticeye on YouTube
 ```
+
+The `TikTok / Reels:` block at the end is the caption to paste when posting the same
+clip to TikTok or Instagram Reels: one short line (about 60 characters, so TikTok shows it
+without cutting it off) worded differently from the YouTube one, 3 hashtags (no `#shorts`)
+and a credit by name, since captions there can't hold links. `upload.py` ignores it.
+The clip's thumbnail `.jpg` is 9:16 and works as the TikTok **cover** and the Reel's cover
+(in TikTok: Edit cover, then add it from your photos),
+and always upload clipper's file rather than a download from another app (Instagram
+shows fewer videos with another app's watermark).
+To add it to folders made before this existed:
+
+```bash
+python3 tiktok.py captions "clips/<video folder>" ["clips/<another>" ...]
+```
+
+It only rewrites the `TikTok / Reels:` block, so edits to the rest of the `.txt` are kept.
+Add `--force` to rewrite captions that are already there (for example after the caption
+rules change); it works on folders in `#COMPLETED` too.
+
+To post on TikTok, build a queue of the next clips:
+
+```bash
+python3 tiktok.py queue clips/*/ "clips/#COMPLETED"/*/ --per-day 2 --days 7
+```
+
+It fills `clips/TikTok queue/` with the videos, named in posting order with the day and
+time (`01 - Thu Nov 26 12pm - ….mp4`), plus `captions.txt` with each one's caption.
+One source video's clips are spread out, and clips already on YouTube come first so
+the same clip can be compared on both. AirDrop the folder to your phone and post them in
+order. Clips with a `tiktok_posted_at` or `tiktok_url` in the posting log are left out
+next time. The videos are hard links, so the queue takes no extra disk space.
+
+#### Posting to TikTok through the API
+
+```bash
+python3 tiktok.py login                                   # once
+python3 tiktok.py post --queue 1 2 --privacy SELF_ONLY    # numbers from the queue
+```
+
+`post` shows who you're posting as, each clip's caption and the settings, and asks
+before sending anything. Following TikTok's rules there is no default privacy (pass
+`--privacy`), and comments, duets and stitches stay off unless you add
+`--allow-comments`, `--allow-duet` or `--allow-stitch`. Posted clips get
+`tiktok_posted_at` and `tiktok_url` in the posting log.
+
+**Until TikTok audits your app, posts are private (`SELF_ONLY`) and your TikTok account
+must be set to private.** After the audit, `--privacy PUBLIC_TO_EVERYONE` works.
+
+Setup (once):
+
+1. At developers.tiktok.com, create an app. TikTok needs a website, Terms of Service and
+   Privacy Policy URL and verifies them; the pages in `docs/` can be served with GitHub
+   Pages for this.
+2. Add **Login Kit** (platform Desktop, redirect URI `http://127.0.0.1:3455/callback/`)
+   and the **Content Posting API** with Direct Post turned on. Scopes:
+   `user.info.basic`, `video.publish`.
+3. Save the app's client key and secret as `secrets/tiktok_client.json`:
+   `{"client_key": "...", "client_secret": "..."}`. `secrets/` is git-ignored.
+4. Run `python3 tiktok.py login` and add your TikTok account as a target user if the
+   app is in Sandbox.
+5. To post publicly, apply for the Content Posting API audit in the developer portal.
 
 ### Chat
 
@@ -204,6 +269,43 @@ because chat reacts after the moment. It's then blended with audio using
   dead zone, glides when the person moves, and cuts instantly on scene changes.
 - **blur**: no clear face. The full frame sits over a blurred copy of itself.
 
+## Uploading to YouTube (`upload.py`)
+
+```bash
+python upload.py "clips/<video folder>" "clips/<another>" --dry-run --preview   # see the plan
+python upload.py clips/*/ --per-day 2-3 --dry-run --preview   # 2-3 a day, every unposted folder
+python upload.py "clips/<video folder>" "clips/<another>"             # upload
+```
+
+Uploads each clip with its title, description, hashtags and tags from its `.txt` (so
+your edits are used) and its thumbnail. Clips from several folders are spread evenly over
+the plan, so one video's clips aren't bunched together, and each gets a slot: 1pm, 4pm and 7pm
+(`--times`, `--per-day 3`, or `--per-day 2-3` to alternate 3- and 2-clip days; 2-clip
+days use the first and last time). Posts already in the posting log (published or
+scheduled by hand, with a `posted_at` time) count toward their day, and new slots stay
+at least 2 hours away from them. `--preview` writes `clips/upload_preview.html`, the plan laid out by day with each
+Short's thumbnail, title, description and hashtags, so you can check it before uploading. The
+slot and the Short's link go into `clips/posting_log.csv`, and clips already there with
+a link are skipped. At most 6 go up per run (`--limit`), about YouTube's daily API quota.
+
+**Private until you publish.** YouTube keeps videos uploaded through a new, unaudited
+API project private, so clips go up as private and you set each publish time in
+Studio (the slot is in the log). If your API project passes YouTube's audit,
+`--schedule` makes YouTube publish each one at its slot. Custom thumbnails need a
+phone-verified channel; if one can't be set, the upload still goes through.
+
+**Setup (once):**
+
+1. In [Google Cloud Console](https://console.cloud.google.com/), create a project and
+   enable **YouTube Data API v3**.
+2. Set up the OAuth consent screen (External, add yourself as a test user), then create
+   an **OAuth client ID** of type **Desktop app** and download its JSON.
+3. Save it as `secrets/client_secret.json` inside the clipper folder (`secrets/` is
+   git-ignored, so it's never committed).
+4. `pip install google-api-python-client google-auth-oauthlib`
+5. The first real run opens your browser to sign in to the channel; the token is saved
+   in `secrets/` too. Neither file is ever committed.
+
 ## Output
 
 Each video gets its own folder inside `-o`, named after the video's title, creator
@@ -230,7 +332,9 @@ length, Claude's rating, score, and where in the source video it's from. Fill in
 `posted_at`, `youtube_url`, `views`, `stayed_to_watch_pct` (Studio's "viewed vs. swiped
 away") and `avg_pct_viewed` as you post. Once there are a few dozen clips with numbers,
 it shows which kinds of clips actually do well. Re-runs replace their own rows but keep
-anything you typed in.
+anything you typed in. For clips you also post to TikTok or Instagram, fill in
+`tiktok_posted_at`, `tiktok_url`, `tiktok_views`, `tiktok_avg_watch_s` and the matching
+`ig_*` columns to compare the platforms.
 
 `clips.json` has the video's title, creator, date and URL. It also lists each clip's
 times, score, score breakdown (peak, intensity, hook, payoff, dead air, audio peak,
