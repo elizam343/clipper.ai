@@ -109,9 +109,9 @@ def twitch_chat(vod_id: str, workdir: Path, section) -> Path | None:
     if out.exists():
         return out
     log("fetching Twitch chat replay")
-    cmd = [exe, "chatdownload", "--id", vod_id, "-o", str(out)]
+    cmd = [exe, "chatdownload", "--id", vod_id, "-o", str(out), "--collision", "Overwrite"]
     if section:
-        cmd += ["-b", str(int(section[0]))] + (["-e", str(int(section[1]))] if section[1] else [])
+        cmd += ["-b", f"{int(section[0])}s"] + (["-e", f"{int(section[1])}s"] if section[1] else [])
     subprocess.run(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                    stderr=subprocess.DEVNULL)
     return out if out.exists() and out.stat().st_size > 0 else None
