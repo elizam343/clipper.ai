@@ -202,6 +202,36 @@ the same clip can be compared on both. AirDrop the folder to your phone and post
 order. Clips with a `tiktok_posted_at` or `tiktok_url` in the posting log are left out
 next time. The videos are hard links, so the queue takes no extra disk space.
 
+#### Posting to TikTok through the API
+
+```bash
+python3 tiktok.py login                                   # once
+python3 tiktok.py post --queue 1 2 --privacy SELF_ONLY    # numbers from the queue
+```
+
+`post` shows who you're posting as, each clip's caption and the settings, and asks
+before sending anything. Following TikTok's rules there is no default privacy (pass
+`--privacy`), and comments, duets and stitches stay off unless you add
+`--allow-comments`, `--allow-duet` or `--allow-stitch`. Posted clips get
+`tiktok_posted_at` and `tiktok_url` in the posting log.
+
+**Until TikTok audits your app, posts are private (`SELF_ONLY`) and your TikTok account
+must be set to private.** After the audit, `--privacy PUBLIC_TO_EVERYONE` works.
+
+Setup (once):
+
+1. At developers.tiktok.com, create an app. TikTok needs a website, Terms of Service and
+   Privacy Policy URL and verifies them; the pages in `docs/` can be served with GitHub
+   Pages for this.
+2. Add **Login Kit** (platform Desktop, redirect URI `http://127.0.0.1:3455/callback/`)
+   and the **Content Posting API** with Direct Post turned on. Scopes:
+   `user.info.basic`, `video.publish`.
+3. Save the app's client key and secret as `secrets/tiktok_client.json`:
+   `{"client_key": "...", "client_secret": "..."}`. `secrets/` is git-ignored.
+4. Run `python3 tiktok.py login` and add your TikTok account as a target user if the
+   app is in Sandbox.
+5. To post publicly, apply for the Content Posting API audit in the developer portal.
+
 ### Chat
 
 Chat spikes are the strongest signal for streams. When chat explodes, something
