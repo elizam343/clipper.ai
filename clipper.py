@@ -603,11 +603,27 @@ def tiktok_credit(meta: dict) -> str:
     return f"🎥 Full video: {who} on YouTube" if who else ""
 
 
+# TikTok shows about 2 lines of a caption before "more", so keep it short
+TIKTOK_LINE_MAX = 60
+TIKTOK_TAGS = 3
+TIKTOK_LINE_RULES = (
+    "ONE short hook line, at most 60 characters so TikTok shows it in full: lead with the "
+    "funniest moment or line, worded differently from the YouTube caption. One emoji is fine. "
+    "No hashtags or links")
+TIKTOK_TAG_RULES = (
+    "exactly 3 hashtags: the creator, the game or topic only if it's widely known and "
+    "searched (e.g. #fnaf, #gmod, #minecraft; skip obscure game names), and a broad one "
+    "people browse (#gaming or #funny) to make 3. No #shorts")
+
+
 def tiktok_caption(line: str, hashtags, meta: dict) -> str:
-    """'<one line> #a #b #c' plus the credit; #shorts is YouTube-only."""
+    """'<one short line> #a #b #c' plus the credit; #shorts is YouTube-only."""
     tags = [t if t.startswith("#") else "#" + t for t in hashtags]
-    tags = [t for t in dict.fromkeys(t.lower() for t in tags) if t not in ("#shorts", "#youtubeshorts")][:5]
+    tags = [t for t in dict.fromkeys(t.lower() for t in tags)
+            if t not in ("#shorts", "#youtubeshorts")][:TIKTOK_TAGS]
     line = re.sub(r"\s*#\w+", "", line).strip()
+    if len(line) > TIKTOK_LINE_MAX + 10:   # TikTok cuts captions off after about 2 lines
+        line = line[:TIKTOK_LINE_MAX + 10].rsplit(" ", 1)[0].rstrip(",.;:-") + "…"
     return "\n".join(x for x in [" ".join([line] + tags).strip(), tiktok_credit(meta)] if x)
 
 
@@ -822,10 +838,8 @@ def claude_captions(clips, meta: dict):
         "people would search for (who, what game). An emoji is fine. No hashtags or links\n"
         "- hashtags: the 2 most relevant hashtags (the game/topic and the creator), each "
         "starting with #\n"
-        "- tiktok: the caption for TikTok and Instagram Reels. ONE punchy line (at most 100 characters, different "
-        "wording from the YouTube caption, an emoji is fine) followed by 3 to 5 hashtags: "
-        "the game/topic, the creator, and 1 to 2 broad ones people browse on TikTok and Reels "
-        "(e.g. #gaming, #funny). No #shorts, no links\n"
+        "- tiktok: the caption for TikTok and Instagram Reels: " + TIKTOK_LINE_RULES
+        + ", followed by " + TIKTOK_TAG_RULES + "\n"
         "- tags: 8 to 15 YouTube Studio tags for this clip (plain keywords or phrases, no #): "
         "what happens in it, the game or topic, and the creator. Prefer the source video's "
         "tags that fit this clip: " + json.dumps((meta.get("tags") or [])[:40]) + "\n"
