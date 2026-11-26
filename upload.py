@@ -25,6 +25,7 @@ import argparse
 import csv
 import datetime as dt
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -35,6 +36,8 @@ TOKEN = CONFIG / "youtube_token.json"
 SCOPES = ["https://www.googleapis.com/auth/youtube.upload",
           "https://www.googleapis.com/auth/youtube"]   # the second is needed to set thumbnails
 LOG_FIELDS = None   # taken from clipper so both stay in sync
+# same as clipper.SOCIAL_HEADER_RE (clipper is imported lazily, it loads slowly)
+SOCIAL_HEADER_RE = r"^(?:TikTok / Reels|TikTok):$"
 
 
 def log(*a):
@@ -47,8 +50,8 @@ def read_caption(txt: Path) -> dict:
     title = blocks[0] if blocks else txt.stem
     tags, hashtags, desc = [], [], []
     for b in blocks[1:]:
-        if b.startswith("TikTok:"):
-            continue   # the TikTok caption isn't part of the YouTube post
+        if re.match(SOCIAL_HEADER_RE, b.split("\n", 1)[0]):
+            continue   # the TikTok / Reels caption isn't part of the YouTube post
         elif b.startswith("Tags:"):
             tags = [t.strip() for t in b[5:].split(",") if t.strip()]
         elif all(w.startswith("#") for w in b.split()):

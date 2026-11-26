@@ -582,6 +582,12 @@ def family_friendly(cap: dict) -> dict:
     return cap
 
 
+# header of the TikTok / Instagram Reels caption block at the end of each clip's .txt
+# (older files say just "TikTok:")
+SOCIAL_HEADER = "TikTok / Reels:"
+SOCIAL_HEADER_RE = r"^(?:TikTok / Reels|TikTok):$"
+
+
 def clean_tiktok(text: str) -> str:
     """Swear-clean a TikTok caption: drop swearing hashtags, clean the words."""
     lines = []
@@ -592,7 +598,7 @@ def clean_tiktok(text: str) -> str:
 
 
 def tiktok_credit(meta: dict) -> str:
-    """TikTok captions can't hold links, so credit the creator by name."""
+    """TikTok and Instagram captions can't hold links, so credit the creator by name."""
     who = meta.get("handle") or meta.get("creator")
     return f"🎥 Full video: {who} on YouTube" if who else ""
 
@@ -816,9 +822,9 @@ def claude_captions(clips, meta: dict):
         "people would search for (who, what game). An emoji is fine. No hashtags or links\n"
         "- hashtags: the 2 most relevant hashtags (the game/topic and the creator), each "
         "starting with #\n"
-        "- tiktok: the TikTok caption. ONE punchy line (at most 100 characters, different "
+        "- tiktok: the caption for TikTok and Instagram Reels. ONE punchy line (at most 100 characters, different "
         "wording from the YouTube caption, an emoji is fine) followed by 3 to 5 hashtags: "
-        "the game/topic, the creator, and 1 to 2 broad ones people browse on TikTok "
+        "the game/topic, the creator, and 1 to 2 broad ones people browse on TikTok and Reels "
         "(e.g. #gaming, #funny). No #shorts, no links\n"
         "- tags: 8 to 15 YouTube Studio tags for this clip (plain keywords or phrases, no #): "
         "what happens in it, the game or topic, and the creator. Prefer the source video's "
@@ -911,7 +917,7 @@ def write_caption_file(path: Path, cap: dict):
     if cap.get("tags"):
         text += f"\nTags: {', '.join(cap['tags'])}\n"
     if cap.get("tiktok"):
-        text += f"\nTikTok:\n{cap['tiktok']}\n"
+        text += f"\n{SOCIAL_HEADER}\n{cap['tiktok']}\n"
     path.write_text(text)
 
 
@@ -1556,7 +1562,8 @@ def finish(video: Path, clip: Clip, box, W, H, a):
 LOG_FIELDS = ["added", "video", "file", "title", "hook", "seconds", "teaser_s", "claude",
               "score", "source_url", "source_at", "posted_at", "youtube_url", "views",
               "stayed_to_watch_pct", "avg_pct_viewed", "tiktok_posted_at", "tiktok_url",
-              "tiktok_views", "tiktok_avg_watch_s", "notes"]
+              "tiktok_views", "tiktok_avg_watch_s", "ig_posted_at", "ig_url", "ig_views",
+              "ig_avg_watch_s", "notes"]
 
 
 def update_posting_log(path: Path, folder: str, clips, meta: dict):

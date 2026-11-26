@@ -170,21 +170,24 @@ Full video: https://www.youtube.com/watch?v=zFk_JjsTMKc
 
 Tags: jacksepticeye, jacksepticeye funny moments, jacksepticeye shorts, ear surgery, ...
 
-TikTok:
+TikTok / Reels:
 Drilling into Billy's head was a bad idea 😬 #jacksepticeye #operateonbilly #gaming #funny
 🎥 Full video: @jacksepticeye on YouTube
 ```
 
-The `TikTok:` block at the end is the caption to paste when posting the same clip to
-TikTok: one line worded differently from the YouTube one, 3–5 hashtags (no `#shorts`)
-and a credit by name, since TikTok captions can't hold links. `upload.py` ignores it.
+The `TikTok / Reels:` block at the end is the caption to paste when posting the same
+clip to TikTok or Instagram Reels: one line worded differently from the YouTube one, 3–5
+hashtags (no `#shorts`) and a credit by name, since captions there can't hold links.
+`upload.py` ignores it. On Instagram, use the clip's thumbnail `.jpg` as the Reel's cover,
+and always upload clipper's file rather than a download from another app (Instagram
+shows fewer videos with another app's watermark).
 To add it to folders made before this existed:
 
 ```bash
 python3 tiktok.py captions "clips/<video folder>" ["clips/<another>" ...]
 ```
 
-It only rewrites the `TikTok:` block, so edits to the rest of the `.txt` are kept.
+It only rewrites the `TikTok / Reels:` block, so edits to the rest of the `.txt` are kept.
 
 ### Chat
 
@@ -282,8 +285,9 @@ length, Claude's rating, score, and where in the source video it's from. Fill in
 `posted_at`, `youtube_url`, `views`, `stayed_to_watch_pct` (Studio's "viewed vs. swiped
 away") and `avg_pct_viewed` as you post. Once there are a few dozen clips with numbers,
 it shows which kinds of clips actually do well. Re-runs replace their own rows but keep
-anything you typed in. For clips you also post to TikTok, fill in `tiktok_posted_at`,
-`tiktok_url`, `tiktok_views` and `tiktok_avg_watch_s` to compare the two.
+anything you typed in. For clips you also post to TikTok or Instagram, fill in
+`tiktok_posted_at`, `tiktok_url`, `tiktok_views`, `tiktok_avg_watch_s` and the matching
+`ig_*` columns to compare the platforms.
 
 `clips.json` has the video's title, creator, date and URL. It also lists each clip's
 times, score, score breakdown (peak, intensity, hook, payoff, dead air, audio peak,

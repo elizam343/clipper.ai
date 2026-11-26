@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""TikTok helpers for clipper's output folders.
+"""TikTok and Instagram Reels helpers for clipper's output folders.
 
     python tiktok.py captions "clips/<video folder>" ["clips/<another>" ...]
 
-New clipper runs already write a TikTok caption into each clip's .txt (the "TikTok:"
-block at the end). `captions` adds that block to folders made before that, without
+New clipper runs already write a caption for TikTok and Instagram Reels into each
+clip's .txt (the "TikTok / Reels:" block at the end). `captions` adds that block to folders made before that, without
 touching the rest of the .txt (so your edits there are kept). It asks Claude when
 ANTHROPIC_API_KEY is set, otherwise it builds one from the title and hashtags.
 
-Posting to TikTok is manual for now: copy the TikTok block when you post, then fill
-tiktok_posted_at / tiktok_url / tiktok_views in clips/posting_log.csv.
+Posting there is manual for now: copy the block when you post, then fill the tiktok_*
+or ig_* columns (posted_at, url, views, avg_watch_s) in clips/posting_log.csv.
 """
 from __future__ import annotations
 
@@ -51,12 +51,12 @@ def claude_lines(clips, meta: dict):
                   transcript=(c.get("text") or "")[:1200]) for i, c in enumerate(clips)]
     prompt = (
         f"These clips are cut from \"{meta['title']}\" by {meta['creator'] or 'unknown'} "
-        "and are being posted to TikTok. For each clip write a TikTok caption:\n"
+        "and are being posted to TikTok and Instagram Reels. For each clip write one caption:\n"
         "- line: ONE punchy line, at most 100 characters, worded differently from the "
         "YouTube caption, based on what happens in the transcript. An emoji is fine. "
         "No hashtags or links\n"
         "- hashtags: 3 to 5 hashtags: the game/topic, the creator, and 1 to 2 broad ones "
-        "people browse on TikTok (e.g. #gaming, #funny). No #shorts\n"
+        "people browse on TikTok and Reels (e.g. #gaming, #funny). No #shorts\n"
         "No profanity or swear words (even censored) and no sexual references. "
         "Don't invent events.\n\n" + json.dumps(items))
     schema = {"type": "object", "properties": {"captions": {"type": "array", "items": {
@@ -79,10 +79,11 @@ def claude_lines(clips, meta: dict):
 
 
 def set_tiktok_block(txt: Path, tiktok: str):
-    """Replace (or add) the 'TikTok:' block at the end of a clip's .txt."""
+    """Replace (or add) the 'TikTok / Reels:' block at the end of a clip's .txt."""
     body = txt.read_text()
-    body = re.split(r"\n*^TikTok:\n", body, maxsplit=1, flags=re.M)[0].rstrip("\n")
-    txt.write_text(f"{body}\n\nTikTok:\n{tiktok}\n")
+    body = re.split(r"\n*" + clipper.SOCIAL_HEADER_RE + r"\n", body, maxsplit=1,
+                    flags=re.M)[0].rstrip("\n")
+    txt.write_text(f"{body}\n\n{clipper.SOCIAL_HEADER}\n{tiktok}\n")
 
 
 def captions(folder: Path, force: bool):
@@ -91,7 +92,7 @@ def captions(folder: Path, force: bool):
     clips = [c for c in js["clips"] if c.get("caption")]
     todo = [c for c in clips if force or not c["caption"].get("tiktok")]
     if not todo:
-        log(f"{folder.name}: already has TikTok captions")
+        log(f"{folder.name}: already has TikTok / Reels captions")
         return
     meta = folder_meta(folder, js, clips)
     got = claude_lines(todo, meta) or {}
@@ -105,15 +106,15 @@ def captions(folder: Path, force: bool):
             if txt.exists():
                 set_tiktok_block(txt, cap["tiktok"])
     js_path.write_text(json.dumps(js, indent=2))
-    log(f"{folder.name}: {len(todo)} TikTok captions ({'Claude' if got else 'basic'})")
+    log(f"{folder.name}: {len(todo)} TikTok / Reels captions ({'Claude' if got else 'basic'})")
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
-    c = sub.add_parser("captions", help="add TikTok captions to existing clip folders")
+    c = sub.add_parser("captions", help="add TikTok / Reels captions to existing clip folders")
     c.add_argument("folders", nargs="+", type=Path)
-    c.add_argument("--force", action="store_true", help="rewrite TikTok captions that exist")
+    c.add_argument("--force", action="store_true", help="rewrite captions that exist")
     a = ap.parse_args()
     for folder in a.folders:
         if not (folder / "clips.json").exists():
