@@ -189,6 +189,19 @@ python3 tiktok.py captions "clips/<video folder>" ["clips/<another>" ...]
 
 It only rewrites the `TikTok / Reels:` block, so edits to the rest of the `.txt` are kept.
 
+To post on TikTok, build a queue of the next clips:
+
+```bash
+python3 tiktok.py queue clips/*/ "clips/#COMPLETED"/*/ --per-day 2 --days 7
+```
+
+It fills `clips/TikTok queue/` with the videos, named in posting order with the day and
+time (`01 - Thu Nov 26 12pm - ….mp4`), plus `captions.txt` with each one's caption.
+One source video's clips are spread out, and clips already on YouTube come first so
+the same clip can be compared on both. AirDrop the folder to your phone and post them in
+order. Clips with a `tiktok_posted_at` or `tiktok_url` in the posting log are left out
+next time. The videos are hard links, so the queue takes no extra disk space.
+
 ### Chat
 
 Chat spikes are the strongest signal for streams. When chat explodes, something
