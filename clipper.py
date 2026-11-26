@@ -55,17 +55,88 @@ def even(x):
 
 
 # --------------------------------------------------------------------------- ingest
-def ingest(src: str, workdir: Path, want_chat: bool):
-    """Return (video_path, chat_path_or_None, metadata with title / creator / date)."""
+def parse_time(s) -> float:
+    """Seconds from '5400', '1:30:00', '90:00' or '1h30m'."""
+    s = str(s).strip().lower()
+    m = re.fullmatch(r"(?:(\d+)h)?\s*(?:(\d+)m)?\s*(?:(\d+(?:\.\d+)?)s)?", s)
+    if m and any(m.groups()):
+        h, mi, se = (float(x or 0) for x in m.groups())
+        return h * 3600 + mi * 60 + se
+    try:
+        secs = 0.0
+        for part in s.split(":"):
+            secs = secs * 60 + float(part)
+        return secs
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not a time: {s!r} (try 1:30:00 or 5400)")
+
+
+def fmt_time(t: float) -> str:
+    """5400.5 -> '1:30:00', 75 -> '1:15'."""
+    t = int(t)
+    return f"{t // 3600}:{t % 3600 // 60:02d}:{t % 60:02d}" if t >= 3600 else f"{t // 60}:{t % 60:02d}"
+
+
+def platform_name(extractor: str) -> str:
+    e = (extractor or "").lower()
+    return ("Twitch" if e.startswith("twitch") else "YouTube" if e.startswith("youtube")
+            else "Kick" if e.startswith("kick") else extractor or "")
+
+
+def clean_stream_title(title: str) -> str:
+    """Stream titles carry chat commands and sponsors ('... - !journey for 10% off - @Brand');
+    keep the parts that read like a title."""
+    parts = []
+    for x in re.split(r"\s+[-|•]\s+", title or ""):
+        if re.search(r"%|\boff\b|\bcode\b|sponsor|\bad\b|giveaway|merch", x, re.I):
+            continue   # promos
+        x = re.sub(r"(^|\s)[!@]\w+", " ", x)   # !commands, @brands
+        x = re.sub(r"\s+", " ", x).strip(" .,-|")
+        if x:
+            parts.append(x)
+    return " - ".join(parts) or (title or "").strip()
+
+
+def twitch_chat(vod_id: str, workdir: Path, section) -> Path | None:
+    """Chat replay of a Twitch VOD through TwitchDownloaderCLI, if it's installed."""
+    exe = shutil.which("TwitchDownloaderCLI")
+    if not exe:
+        log("Twitch chat: install TwitchDownloaderCLI to use chat spikes "
+            "(see README); going on with audio only")
+        return None
+    tag = f"_{int(section[0])}-{int(section[1]) if section[1] else 'end'}" if section else ""
+    out = workdir / f"twitch_{vod_id}{tag}.chat.json"
+    if out.exists():
+        return out
+    log("fetching Twitch chat replay")
+    cmd = [exe, "chatdownload", "--id", vod_id, "-o", str(out)]
+    if section:
+        cmd += ["-b", str(int(section[0]))] + (["-e", str(int(section[1]))] if section[1] else [])
+    subprocess.run(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                   stderr=subprocess.DEVNULL)
+    return out if out.exists() and out.stat().st_size > 0 else None
+
+
+def ingest(src: str, workdir: Path, want_chat: bool, section=None, max_height=1080):
+    """Return (video_path, chat_path_or_None, metadata with title / creator / date).
+    section=(start, end_or_None) downloads only that part of a URL (long streams); the
+    metadata then has offset=start, and times in the file start at 0."""
     if re.match(r"^https?://", src):
         if not shutil.which("yt-dlp"):
             sys.exit("yt-dlp is not installed: pip install yt-dlp")
-        log("downloading", src)
-        # one file per video id, so different URLs never reuse each other's download
-        out = workdir / "%(id)s.%(ext)s"
-        res = subprocess.run(["yt-dlp", "-f", "bv*[height<=1080]+ba/b[height<=1080]/b",
+        log("downloading", src + (f" ({fmt_time(section[0])} to "
+                                  f"{fmt_time(section[1]) if section[1] else 'the end'})"
+                                  if section else ""))
+        # one file per video id (and part), so different URLs never reuse each other's download
+        tag = f"_{int(section[0])}-{int(section[1]) if section[1] else 'end'}" if section else ""
+        tag += f"_{max_height}p" if max_height != 1080 else ""
+        out = workdir / f"%(id)s{tag}.%(ext)s"
+        cut = (["--download-sections", f"*{section[0]}-{section[1] if section[1] else 'inf'}"]
+               if section else [])
+        h = max_height
+        res = subprocess.run(["yt-dlp", "-f", f"bv*[height<={h}]+ba/b[height<={h}]/b",
                               "--merge-output-format", "mp4", "--write-info-json",
-                              "--no-simulate", "--print", "after_move:filepath",
+                              "--no-simulate", "--print", "after_move:filepath", *cut,
                               "-o", str(out), src], stdout=subprocess.PIPE, text=True)
         lines = [l for l in res.stdout.splitlines() if l.strip()]
         if res.returncode or not lines or not Path(lines[-1]).exists():
@@ -76,7 +147,9 @@ def ingest(src: str, workdir: Path, want_chat: bool):
         if info.exists():
             j = json.loads(info.read_text())
             d = j.get("upload_date") or ""
-            meta = dict(title=j.get("title"), creator=j.get("channel") or j.get("uploader"),
+            plat = platform_name(j.get("extractor_key") or j.get("extractor"))
+            meta = dict(title=clean_stream_title(j.get("title")) if plat == "Twitch" else j.get("title"),
+                        creator=j.get("channel") or j.get("uploader"), platform=plat,
                         date=f"{d[:4]}-{d[4:6]}-{d[6:]}" if len(d) == 8 else None,
                         url=j.get("webpage_url") or src, id=j.get("id"),
                         summary=first_paragraph(j.get("description") or ""),
@@ -84,8 +157,12 @@ def ingest(src: str, workdir: Path, want_chat: bool):
                         tags=[str(x) for x in j.get("tags") or []],
                         chapters=[dict(start=c.get("start_time", 0), end=c.get("end_time"),
                                        title=c.get("title", "")) for c in j.get("chapters") or []])
+        if section:
+            meta["offset"] = section[0]
         chat = None
-        if want_chat and "youtu" in src:
+        if want_chat and meta.get("platform") == "Twitch" and str(meta.get("id", "")).startswith("v"):
+            chat = twitch_chat(meta["id"][1:], workdir, section)   # VODs only; clips have no chat
+        elif want_chat and "youtu" in src:
             log("fetching chat replay (if the video has one)")
             subprocess.run(["yt-dlp", "--skip-download", "--write-subs", "--sub-langs", "live_chat",
                             "-o", str(out), src],
@@ -600,7 +677,8 @@ def clean_tiktok(text: str) -> str:
 def tiktok_credit(meta: dict) -> str:
     """TikTok and Instagram captions can't hold links, so credit the creator by name."""
     who = meta.get("handle") or meta.get("creator")
-    return f"🎥 Full video: {who} on YouTube" if who else ""
+    plat = meta.get("platform") or ("YouTube" if "youtu" in (meta.get("url") or "") else "")
+    return f"🎥 Full video: {who}{' on ' + plat if plat else ''}" if who else ""
 
 
 # TikTok shows about 2 lines of a caption before "more", so keep it short
@@ -1605,7 +1683,7 @@ def update_posting_log(path: Path, folder: str, clips, meta: dict):
                          "claude": (c.llm or {}).get("score", ""),
                          "score": round(c.score, 3),
                          "source_url": meta.get("url", ""),
-                         "source_at": f"{int(c.start // 60)}:{c.start % 60:04.1f}"})
+                         "source_at": fmt_time(c.start + meta.get("offset", 0))})
     with path.open("w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=LOG_FIELDS)
         w.writeheader()
@@ -1650,7 +1728,8 @@ def main():
                     help="auto picks per clip: screen (facecam+gameplay), split (two people), "
                          "track (follow one face) or blur")
     ap.add_argument("--chat", default=None, help="chat replay file (YouTube live_chat.json, "
-                    "TwitchDownloader JSON, or '[hh:mm:ss] msg' text). Auto-fetched for YouTube URLs")
+                    "TwitchDownloader JSON, or '[hh:mm:ss] msg' text). Auto-fetched for YouTube URLs, and for "
+                    "Twitch VODs when TwitchDownloaderCLI is installed")
     ap.add_argument("--no-chat", action="store_true", help="ignore chat even if available")
     ap.add_argument("--chat-delay", type=float, default=4.0, help="seconds chat lags behind the moment")
     ap.add_argument("--chat-weight", type=float, default=0.55, help="0-1, how much chat counts vs audio")
@@ -1658,8 +1737,11 @@ def main():
     ap.add_argument("--lang", default=None, help="language code, e.g. en (default: detect)")
     ap.add_argument("--no-transcribe", action="store_true", help="skip transcription (fastest)")
     ap.add_argument("--llm", action="store_true", help="re-rank candidates with Claude (needs ANTHROPIC_API_KEY)")
-    ap.add_argument("--start", type=float, default=0, help="only look after this time (s)")
-    ap.add_argument("--end", type=float, default=None, help="only look before this time (s)")
+    ap.add_argument("--start", type=parse_time, default=0,
+                    help="only look after this time (seconds or 1:30:00); for a URL, only "
+                         "this part is downloaded")
+    ap.add_argument("--end", type=parse_time, default=None,
+                    help="only look before this time (seconds or 1:30:00)")
     ap.add_argument("--format", choices=["portrait", "landscape", "both"], default=None,
                     help="portrait: 9:16 crop; landscape: whole frame inside the 9:16 Short with black bars; "
                          "both: render each "
@@ -1688,7 +1770,16 @@ def main():
     work.mkdir(parents=True, exist_ok=True)
     W, H = (int(v) for v in a.size.lower().split("x"))
 
-    src, chat_file, meta = ingest(a.input, work, want_chat=not a.no_chat and not a.chat)
+    is_url = bool(re.match(r"^https?://", a.input))
+    section = (a.start, a.end) if is_url and (a.start or a.end) else None
+    # landscape clips shrink the frame to the Short's width, so 720p looks the same
+    # and is about half the download (streams run for hours)
+    max_h = 720 if a.format == "landscape" and W <= 1080 else 1080
+    src, chat_file, meta = ingest(a.input, work, want_chat=not a.no_chat and not a.chat,
+                                  section=section, max_height=max_h)
+    offset = meta.get("offset", 0)   # the file starts this far into the original video
+    if section:
+        a.start, a.end = 0, None
     # every video gets its own folder: "<title> - <creator> - <upload date>"
     out = base / folder_name(meta)
     out.mkdir(parents=True, exist_ok=True)
@@ -1713,6 +1804,9 @@ def main():
     excite, chat_ex = audio_ex, None
     if chat_file:
         msgs = load_chat(chat_file)
+        if offset and msgs and sorted(t for t, _ in msgs)[len(msgs) // 2] >= offset:
+            # chat times count from the start of the stream, the file from the cut
+            msgs = [(t - offset, m) for t, m in msgs if t >= offset]
         log(f"chat: {len(msgs)} messages from {chat_file.name}")
         if len(msgs) >= 50:
             chat_ex = chat_features(msgs, n, a.chat_delay)
