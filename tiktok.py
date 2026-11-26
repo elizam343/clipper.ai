@@ -73,11 +73,8 @@ def claude_lines(clips, meta: dict):
     prompt = (
         f"These clips are cut from \"{meta['title']}\" by {meta['creator'] or 'unknown'} "
         "and are being posted to TikTok and Instagram Reels. For each clip write one caption:\n"
-        "- line: ONE punchy line, at most 100 characters, worded differently from the "
-        "YouTube caption, based on what happens in the transcript. An emoji is fine. "
-        "No hashtags or links\n"
-        "- hashtags: 3 to 5 hashtags: the game/topic, the creator, and 1 to 2 broad ones "
-        "people browse on TikTok and Reels (e.g. #gaming, #funny). No #shorts\n"
+        "- line: " + clipper.TIKTOK_LINE_RULES + ". Base it on what happens in the transcript\n"
+        "- hashtags: " + clipper.TIKTOK_TAG_RULES + "\n"
         "No profanity or swear words (even censored) and no sexual references. "
         "Don't invent events.\n\n" + json.dumps(items))
     schema = {"type": "object", "properties": {"captions": {"type": "array", "items": {

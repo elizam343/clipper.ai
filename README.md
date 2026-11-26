@@ -171,14 +171,16 @@ Full video: https://www.youtube.com/watch?v=zFk_JjsTMKc
 Tags: jacksepticeye, jacksepticeye funny moments, jacksepticeye shorts, ear surgery, ...
 
 TikTok / Reels:
-Drilling into Billy's head was a bad idea 😬 #jacksepticeye #operateonbilly #gaming #funny
+Drilling into Billy's head was a bad idea 😬 #jacksepticeye #gaming #funny
 🎥 Full video: @jacksepticeye on YouTube
 ```
 
 The `TikTok / Reels:` block at the end is the caption to paste when posting the same
-clip to TikTok or Instagram Reels: one line worded differently from the YouTube one, 3–5
-hashtags (no `#shorts`) and a credit by name, since captions there can't hold links.
-`upload.py` ignores it. On Instagram, use the clip's thumbnail `.jpg` as the Reel's cover,
+clip to TikTok or Instagram Reels: one short line (about 60 characters, so TikTok shows it
+without cutting it off) worded differently from the YouTube one, 3 hashtags (no `#shorts`)
+and a credit by name, since captions there can't hold links. `upload.py` ignores it.
+The clip's thumbnail `.jpg` is 9:16 and works as the TikTok **cover** and the Reel's cover
+(in TikTok: Edit cover, then add it from your photos),
 and always upload clipper's file rather than a download from another app (Instagram
 shows fewer videos with another app's watermark).
 To add it to folders made before this existed:
@@ -188,6 +190,8 @@ python3 tiktok.py captions "clips/<video folder>" ["clips/<another>" ...]
 ```
 
 It only rewrites the `TikTok / Reels:` block, so edits to the rest of the `.txt` are kept.
+Add `--force` to rewrite captions that are already there (for example after the caption
+rules change); it works on folders in `#COMPLETED` too.
 
 To post on TikTok, build a queue of the next clips:
 
