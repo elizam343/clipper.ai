@@ -577,7 +577,32 @@ def family_friendly(cap: dict) -> dict:
     # only the first 3 hashtags show (above the title), so keep #shorts plus the 2 best
     cap["hashtags"] = [t for t in cap["hashtags"] if not has_swear(t.lstrip("#"))][:3]
     cap["tags"] = [t for t in cap.get("tags") or [] if not has_swear(t)]
+    if cap.get("tiktok"):
+        cap["tiktok"] = clean_tiktok(cap["tiktok"])
     return cap
+
+
+def clean_tiktok(text: str) -> str:
+    """Swear-clean a TikTok caption: drop swearing hashtags, clean the words."""
+    lines = []
+    for line in text.splitlines():
+        toks = [t for t in line.split(" ") if not (t.startswith("#") and has_swear(t[1:]))]
+        lines.append(" ".join(clean_swears(t) if not t.startswith("#") else t for t in toks))
+    return "\n".join(l.strip() for l in lines if l.strip())
+
+
+def tiktok_credit(meta: dict) -> str:
+    """TikTok captions can't hold links, so credit the creator by name."""
+    who = meta.get("handle") or meta.get("creator")
+    return f"🎥 Full video: {who} on YouTube" if who else ""
+
+
+def tiktok_caption(line: str, hashtags, meta: dict) -> str:
+    """'<one line> #a #b #c' plus the credit; #shorts is YouTube-only."""
+    tags = [t if t.startswith("#") else "#" + t for t in hashtags]
+    tags = [t for t in dict.fromkeys(t.lower() for t in tags) if t not in ("#shorts", "#youtubeshorts")][:5]
+    line = re.sub(r"\s*#\w+", "", line).strip()
+    return "\n".join(x for x in [" ".join([line] + tags).strip(), tiktok_credit(meta)] if x)
 
 
 def _tag(s: str) -> str:
@@ -633,8 +658,10 @@ def basic_caption(clip: Clip, meta: dict) -> dict:
     norm = lambda x: re.sub(r"\W", "", x.lower())
     hook_line = next((x for x in short if norm(x) != norm(title) and len(x.split()) <= 7
                       and not has_swear(x)), "")
-    return dict(title=title, caption=caption, hashtags=list(dict.fromkeys(tags)),
-                tags=youtube_tags(clip, meta), hook=hook_line, source="basic")
+    tags = list(dict.fromkeys(tags))
+    return dict(title=title, caption=caption, hashtags=tags,
+                tags=youtube_tags(clip, meta), hook=hook_line, source="basic",
+                tiktok=tiktok_caption(title, tags, meta))
 
 
 def topic_tag(meta: dict) -> str:
@@ -789,6 +816,10 @@ def claude_captions(clips, meta: dict):
         "people would search for (who, what game). An emoji is fine. No hashtags or links\n"
         "- hashtags: the 2 most relevant hashtags (the game/topic and the creator), each "
         "starting with #\n"
+        "- tiktok: the TikTok caption. ONE punchy line (at most 100 characters, different "
+        "wording from the YouTube caption, an emoji is fine) followed by 3 to 5 hashtags: "
+        "the game/topic, the creator, and 1 to 2 broad ones people browse on TikTok "
+        "(e.g. #gaming, #funny). No #shorts, no links\n"
         "- tags: 8 to 15 YouTube Studio tags for this clip (plain keywords or phrases, no #): "
         "what happens in it, the game or topic, and the creator. Prefer the source video's "
         "tags that fit this clip: " + json.dumps((meta.get("tags") or [])[:40]) + "\n"
@@ -805,8 +836,8 @@ def claude_captions(clips, meta: dict):
                            "caption": {"type": "string"},
                            "hashtags": {"type": "array", "items": {"type": "string"}},
                            "tags": {"type": "array", "items": {"type": "string"}},
-                           "hook": {"type": "string"}},
-            "required": ["id", "title", "caption", "hashtags", "tags", "hook"],
+                           "hook": {"type": "string"}, "tiktok": {"type": "string"}},
+            "required": ["id", "title", "caption", "hashtags", "tags", "hook", "tiktok"],
             "additionalProperties": False}}},
         "required": ["captions"],
         "additionalProperties": False}
@@ -845,7 +876,10 @@ def claude_captions(clips, meta: dict):
         if credit_line(meta):
             cap += "\n" + credit_line(meta)
         out.append(dict(title=d["title"], caption=cap, hashtags=tags, hook=d.get("hook", ""),
-                        tags=youtube_tags(c, meta, first=d["tags"]), source="claude"))
+                        tags=youtube_tags(c, meta, first=d["tags"]), source="claude",
+                        tiktok=tiktok_caption(d.get("tiktok") or d["title"],
+                                              re.findall(r"#\w+", d.get("tiktok") or "") or tags,
+                                              meta)))
     return out
 
 
@@ -876,6 +910,8 @@ def write_caption_file(path: Path, cap: dict):
     text = f"{cap['title']}\n\n{cap['caption']}\n\n{' '.join(cap['hashtags'])}\n"
     if cap.get("tags"):
         text += f"\nTags: {', '.join(cap['tags'])}\n"
+    if cap.get("tiktok"):
+        text += f"\nTikTok:\n{cap['tiktok']}\n"
     path.write_text(text)
 
 
@@ -1519,7 +1555,8 @@ def finish(video: Path, clip: Clip, box, W, H, a):
 
 LOG_FIELDS = ["added", "video", "file", "title", "hook", "seconds", "teaser_s", "claude",
               "score", "source_url", "source_at", "posted_at", "youtube_url", "views",
-              "stayed_to_watch_pct", "avg_pct_viewed", "notes"]
+              "stayed_to_watch_pct", "avg_pct_viewed", "tiktok_posted_at", "tiktok_url",
+              "tiktok_views", "tiktok_avg_watch_s", "notes"]
 
 
 def update_posting_log(path: Path, folder: str, clips, meta: dict):

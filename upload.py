@@ -47,7 +47,9 @@ def read_caption(txt: Path) -> dict:
     title = blocks[0] if blocks else txt.stem
     tags, hashtags, desc = [], [], []
     for b in blocks[1:]:
-        if b.startswith("Tags:"):
+        if b.startswith("TikTok:"):
+            continue   # the TikTok caption isn't part of the YouTube post
+        elif b.startswith("Tags:"):
             tags = [t.strip() for t in b[5:].split(",") if t.strip()]
         elif all(w.startswith("#") for w in b.split()):
             hashtags = b.split()
