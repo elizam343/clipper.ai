@@ -253,6 +253,8 @@ def main():
     ap.add_argument("--category", default="20", help="YouTube category id (20 Gaming, 24 Entertainment)")
     ap.add_argument("--log", default=None, help="posting log (default: clips/posting_log.csv)")
     ap.add_argument("--dry-run", action="store_true", help="show the plan, upload nothing")
+    ap.add_argument("--exclude", action="append", default=[], metavar="FOLDER/FILE",
+                    help="don't upload this clip (its folder name / video file name); repeatable")
     ap.add_argument("--preview", nargs="?", const="", default=None,
                     help="also write an HTML preview of the schedule (thumbnails, titles, "
                          "descriptions); default clips/upload_preview.html")
@@ -262,6 +264,7 @@ def main():
     log_path = Path(args.log) if args.log else folders[0].parent / "posting_log.csv"
     rows = read_log(log_path)
     done = {(r["video"], r["file"]) for r in rows if r.get("youtube_url")}
+    done |= {tuple(x.split("/", 1)) for x in args.exclude if "/" in x}
     entries = interleave([[e for e in clip_entries(f) if (e["folder"], e["file"]) not in done]
                           for f in folders])[:args.limit]
     if not entries:

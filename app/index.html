@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Clipper</title>
+<link rel="icon" href="/icon.png">
+<style>
+:root{
+  --bg:#f6f5fa;--panel:#fff;--ink:#1d1838;--muted:#6b6785;--line:#e4e1ef;
+  --accent:#ffd400;--accent-ink:#1e1646;--brand:#7a2a8f;--ok:#1f8a4c;--bad:#c23a3a;--chip:#efecf7;
+}
+@media (prefers-color-scheme:dark){:root{
+  --bg:#14111f;--panel:#1d1930;--ink:#efedf7;--muted:#a39fbd;--line:#2f2a47;
+  --brand:#d27be6;--ok:#4cc483;--bad:#ff7a7a;--chip:#2a2541;
+}}
+*{box-sizing:border-box}
+body{margin:0;font:14px/1.45 -apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;background:var(--bg);color:var(--ink)}
+header{display:flex;align-items:center;gap:12px;padding:14px 20px;border-bottom:1px solid var(--line);background:var(--panel);position:sticky;top:0;z-index:5}
+header img{width:30px;height:30px;border-radius:8px}
+header h1{font-size:17px;margin:0;font-weight:700}
+nav{display:flex;gap:4px;margin-left:16px}
+nav button{border:0;background:none;color:var(--muted);font:inherit;font-weight:600;padding:7px 12px;border-radius:8px;cursor:pointer}
+nav button.on{background:var(--chip);color:var(--ink)}
+nav .badge{background:var(--accent);color:var(--accent-ink);border-radius:9px;padding:0 6px;margin-left:5px;font-size:12px}
+main{max-width:1100px;margin:0 auto;padding:20px}
+section{display:none}section.on{display:block}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px;margin-bottom:16px}
+h2{font-size:15px;margin:0 0 12px}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+input,select,textarea{font:inherit;color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:9px;padding:9px 11px}
+input[type=url]{flex:1;min-width:260px}
+textarea{width:100%;resize:vertical;min-height:64px}
+button.primary{background:var(--accent);color:var(--accent-ink);border:0;border-radius:9px;padding:9px 16px;font:inherit;font-weight:700;cursor:pointer}
+button.ghost{background:none;border:1px solid var(--line);color:var(--ink);border-radius:9px;padding:7px 12px;font:inherit;cursor:pointer}
+button:disabled{opacity:.5;cursor:default}
+.muted{color:var(--muted)}.small{font-size:12px}
+a{color:var(--brand);text-decoration:none}a:hover{text-decoration:underline}
+.err{color:var(--bad);margin-top:8px;min-height:1em}
+.job{border-top:1px solid var(--line);padding:12px 0}.job:first-of-type{border-top:0}
+.job .top{display:flex;gap:10px;align-items:center}
+.pill{font-size:12px;font-weight:600;border-radius:20px;padding:2px 9px;background:var(--chip)}
+.pill.running{background:var(--accent);color:var(--accent-ink)}
+.pill.done{color:var(--ok)}.pill.failed{color:var(--bad)}
+.job pre{margin:8px 0 0;font:11px/1.4 ui-monospace,Menlo,monospace;color:var(--muted);white-space:pre-wrap;max-height:110px;overflow:auto}
+.folder h2{display:flex;gap:10px;align-items:center}
+.folder h2 .name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:14px}
+.clip{border:1px solid var(--line);border-radius:12px;overflow:hidden;background:var(--bg);display:flex;flex-direction:column}
+.clip.skipped{opacity:.45}
+.clip .media{position:relative;aspect-ratio:9/16;background:#000}
+.clip .media img,.clip .media video{width:100%;height:100%;object-fit:cover;display:block}
+.clip .media .play{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;cursor:pointer}
+.clip .media .play span{width:54px;height:54px;border-radius:50%;background:rgba(0,0,0,.55);color:#fff;display:flex;align-items:center;justify-content:center;font-size:22px}
+.clip .body{padding:10px;display:flex;flex-direction:column;gap:6px;flex:1}
+.clip input.title{font-weight:700;padding:6px 8px}
+.clip textarea{font-size:12px;min-height:58px;padding:6px 8px}
+.clip .tags{font-size:12px;color:var(--brand)}
+.clip .actions{display:flex;gap:6px;align-items:center;margin-top:auto}
+.status{font-size:12px;font-weight:600}
+.status.posted{color:var(--ok)}
+.status.posted a{color:inherit}
+.plan{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:8px;margin:12px 0}
+.plan div{display:flex;gap:8px;align-items:center;background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:6px}
+.plan img{width:34px;height:60px;object-fit:cover;border-radius:5px}
+.plan b{display:block;font-size:12px}
+.day{display:grid;grid-template-columns:120px 1fr;gap:12px;padding:10px 0;border-top:1px solid var(--line)}
+.day:first-of-type{border-top:0}
+.day .date{font-weight:700}.day .date.today{color:var(--brand)}
+.post{display:flex;gap:10px;align-items:center;padding:3px 0}
+.post .t{width:52px;color:var(--muted);font-variant-numeric:tabular-nums}
+.post .where{font-size:11px;font-weight:700;border-radius:6px;padding:1px 6px;background:var(--chip)}
+.post .warn{font-size:11px;color:var(--bad)}
+.empty{color:var(--muted);padding:20px 0;text-align:center}
+@media (max-width:640px){nav{margin-left:0}header{flex-wrap:wrap}.day{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<header>
+  <img src="/icon.png" alt="">
+  <h1>Clipper</h1>
+  <nav>
+    <button data-tab="new" class="on">New clips</button>
+    <button data-tab="review">Review &amp; upload <span class="badge" id="waiting" hidden></span></button>
+    <button data-tab="calendar">Calendar</button>
+  </nav>
+</header>
+<main>
+  <section id="new" class="on">
+    <div class="card">
+      <h2>Make clips from a video</h2>
+      <div class="row">
+        <input type="url" id="url" placeholder="Paste a YouTube link…" autocomplete="off">
+        <select id="format" title="Where is the funny part?">
+          <option value="landscape">Landscape (gameplay, several people)</option>
+          <option value="portrait">Portrait (one person / face)</option>
+          <option value="both">Both</option>
+        </select>
+        <button class="primary" id="go">Make clips</button>
+      </div>
+      <div class="err" id="newErr"></div>
+      <p class="muted small">Takes a few minutes. You'll get a notification when the clips are ready to review. Only clip videos you have the rights to use.</p>
+    </div>
+    <div class="card">
+      <h2>Activity</h2>
+      <div id="jobs"><div class="empty">Nothing running.</div></div>
+    </div>
+  </section>
+
+  <section id="review">
+    <div class="card">
+      <h2>Upload to YouTube</h2>
+      <div class="row">
+        <label>Per day <select id="perDay"><option>2</option><option>2-3</option><option>3</option></select></label>
+        <label>Times <input id="times" size="20"></label>
+        <label>How many now <select id="limit"><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option><option>6</option></select></label>
+        <button class="ghost" id="replan">Update plan</button>
+      </div>
+      <p class="muted small">Clips from the videos you tick below, spread out so one video's clips aren't back to back, fitting around posts already scheduled. YouTube allows about 6 uploads a day. Clips go up <b>private</b>: set each one's time in Studio (shown in the Calendar).</p>
+      <div class="plan" id="plan"></div>
+      <div class="row"><button class="primary" id="upload">Upload</button><span class="err" id="upErr"></span></div>
+    </div>
+    <div id="folders"></div>
+  </section>
+
+  <section id="calendar">
+    <div class="card">
+      <h2>Posting calendar</h2>
+      <p class="muted small">Everything in the posting log with a time, from last week on. <span style="color:var(--bad)">Set in Studio</span> marks private uploads that still need their publish time set.</p>
+      <div id="days"></div>
+    </div>
+  </section>
+</main>
+<script>
+const TOKEN = "__TOKEN__";
+const api = async (path, body) => {
+  const r = await fetch(path, body === undefined ? {headers:{"X-Clipper-Token":TOKEN}} :
+    {method:"POST", headers:{"X-Clipper-Token":TOKEN,"Content-Type":"application/json"}, body:JSON.stringify(body)});
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || `Error ${r.status}`);
+  return j;
+};
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const media = p => "/media/" + p.split("/").map(encodeURIComponent).join("/");
+const shortName = n => n.split(" - ").slice(0, -1).join(" - ") || n;
+
+// tabs
+document.querySelectorAll("nav button").forEach(b => b.onclick = () => show(b.dataset.tab));
+function show(tab){
+  document.querySelectorAll("nav button").forEach(b => b.classList.toggle("on", b.dataset.tab === tab));
+  document.querySelectorAll("section").forEach(s => s.classList.toggle("on", s.id === tab));
+  try { localStorage.setItem("tab", tab); } catch {}
+  if (tab === "review") loadFolders();
+  if (tab === "calendar") loadCalendar();
+}
+
+// ---- new clips + activity
+$("#go").onclick = async () => {
+  $("#newErr").textContent = "";
+  try {
+    await api("/api/jobs", {url: $("#url").value, format: $("#format").value});
+    $("#url").value = ""; pollJobs();
+  } catch (e) { $("#newErr").textContent = e.message; }
+};
+$("#url").addEventListener("keydown", e => { if (e.key === "Enter") $("#go").click(); });
+let lastStatus = {};
+async function pollJobs(){
+  let jobs = [];
+  try { jobs = await api("/api/jobs"); } catch { return; }
+  $("#jobs").innerHTML = jobs.length ? jobs.map(j => {
+    const mins = Math.max(1, Math.round(((j.ended || Date.now()/1000) - j.started) / 60));
+    const extra = j.kind === "clip" && j.rendered ? ` · ${j.rendered} rendered` : "";
+    const open = j.status === "done" && j.kind === "clip" ? `<button class="ghost" onclick="show('review')">Review clips</button>` : "";
+    return `<div class="job"><div class="top"><span class="pill ${j.status}">${esc(j.stage)}</span>
+      <b style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(j.folder ? shortName(j.folder) : j.title)}</b>
+      <span class="muted small">${mins} min${extra}</span>${open}</div>
+      <pre>${esc(j.lines.join("\n"))}</pre></div>`;
+  }).join("") : `<div class="empty">Nothing running.</div>`;
+  for (const j of jobs) {
+    if (lastStatus[j.id] === "running" && j.status !== "running") {
+      loadFolders(); loadCalendar();
+    }
+    lastStatus[j.id] = j.status;
+  }
+  const running = jobs.some(j => j.status === "running");
+  $("#upload").disabled = jobs.some(j => j.kind === "upload" && j.status === "running");
+  setTimeout(pollJobs, running ? 2000 : 8000);
+}
+
+// ---- review & upload
+let folders = [], picked = new Set(), settings = null;
+async function loadFolders(){
+  folders = await api("/api/folders");
+  const total = folders.reduce((n, f) => n + f.waiting, 0);
+  $("#waiting").hidden = !total; $("#waiting").textContent = total;
+  if (!picked.size) folders.filter(f => f.waiting).forEach(f => picked.add(f.name));
+  for (const n of [...picked]) if (!folders.some(f => f.name === n && f.waiting)) picked.delete(n);
+  $("#folders").innerHTML = folders.length ? folders.map(folderHTML).join("") :
+    `<div class="card empty">No clips yet. Paste a link in New clips.</div>`;
+  loadPlan();
+}
+function folderHTML(f){
+  const allDone = f.clips.every(c => c.youtube_url || c.skipped);
+  return `<div class="card folder"><h2>
+    <input type="checkbox" ${picked.has(f.name) ? "checked" : ""} ${f.waiting ? "" : "disabled"}
+      onchange="togglePick(${esc(JSON.stringify(f.name))}, this.checked)" title="Include in the next upload">
+    <span class="name" title="${esc(f.name)}">${esc(shortName(f.name))}</span>
+    <span class="muted small">${f.waiting} waiting</span>
+    ${allDone ? `<button class="ghost" onclick="complete(${esc(JSON.stringify(f.name))})">Move to #COMPLETED</button>` : ""}
+    </h2><div class="grid">${f.clips.map(c => clipHTML(f, c)).join("")}</div></div>`;
+}
+function clipHTML(f, c){
+  const id = esc(JSON.stringify([f.name, c.file]));
+  const status = c.youtube_url
+    ? `<span class="status posted">On YouTube · <a href="${esc(c.youtube_url)}" target="_blank">open</a>${c.views ? ` · ${esc(c.views)} views` : ""}</span>`
+    : c.skipped ? `<span class="status muted">Skipped</span>` : `<span class="status muted">Waiting</span>`;
+  return `<div class="clip ${c.skipped ? "skipped" : ""}">
+    <div class="media">${c.thumb ? `<img src="${media(c.thumb)}" loading="lazy" alt="">` : ""}
+      <div class="play" onclick='playClip(this, ${esc(JSON.stringify(media(c.video)))})'><span>▶</span></div></div>
+    <div class="body">
+      <input class="title" value="${esc(c.title)}" maxlength="100" ${c.youtube_url ? "disabled" : ""}>
+      <textarea ${c.youtube_url ? "disabled" : ""}>${esc(c.description)}</textarea>
+      <div class="tags">${esc(c.hashtags)}</div>
+      <div class="actions">${status}<span style="flex:1"></span>
+        ${c.youtube_url ? "" : `<button class="ghost" onclick='save(this, ${id})'>Save</button>
+        <button class="ghost" onclick='skip(${id}, ${!c.skipped})'>${c.skipped ? "Undo skip" : "Skip"}</button>`}
+      </div></div></div>`;
+}
+function playClip(el, src){
+  const v = document.createElement("video");
+  v.src = src; v.controls = true; v.autoplay = true; v.playsInline = true;
+  el.parentElement.replaceChildren(v);
+}
+async function save(btn, [folder, file]){
+  const card = btn.closest(".clip");
+  btn.disabled = true;
+  try {
+    await api("/api/caption", {folder, file, title: card.querySelector("input.title").value,
+                               description: card.querySelector("textarea").value});
+    btn.textContent = "Saved"; setTimeout(() => { btn.textContent = "Save"; btn.disabled = false; }, 1200);
+    loadPlan();
+  } catch (e) { alert(e.message); btn.disabled = false; }
+}
+async function skip([folder, file], on){ await api("/api/skip", {folder, file, skip: on}); loadFolders(); }
+function togglePick(name, on){ on ? picked.add(name) : picked.delete(name); loadPlan(); }
+async function complete(name){
+  if (!confirm(`Move "${shortName(name)}" to #COMPLETED? Its clips are all posted, scheduled or skipped.`)) return;
+  try { await api("/api/complete", {folder: name}); picked.delete(name); loadFolders(); } catch (e) { alert(e.message); }
+}
+function readSettings(){ return {per_day: $("#perDay").value, times: $("#times").value, limit: +$("#limit").value}; }
+async function loadPlan(){
+  const r = await api("/api/plan", {folders: [...picked], settings: settings ? readSettings() : undefined});
+  if (!settings) { settings = r.settings; $("#perDay").value = r.settings.per_day; $("#times").value = r.settings.times; $("#limit").value = r.settings.limit; }
+  $("#plan").innerHTML = r.plan.length ? r.plan.map(p => {
+    const t = new Date(p.at);
+    return `<div>${p.thumb ? `<img src="${media(p.thumb)}" alt="">` : ""}<span><b>${t.toLocaleDateString([], {weekday:"short", month:"short", day:"numeric"})} · ${t.toLocaleTimeString([], {hour:"numeric", minute:"2-digit"})}</b>${esc(p.title)}</span></div>`;
+  }).join("") : `<span class="muted small">Nothing to upload: tick a video with clips waiting.</span>`;
+  $("#upload").textContent = r.plan.length ? `Upload ${r.plan.length} clip${r.plan.length > 1 ? "s" : ""}` : "Upload";
+  $("#upload").dataset.n = r.plan.length;
+}
+$("#replan").onclick = loadPlan;
+$("#upload").onclick = async () => {
+  $("#upErr").textContent = "";
+  const n = +$("#upload").dataset.n;
+  if (!n) return;
+  if (!confirm(`Upload ${n} clip${n > 1 ? "s" : ""} to your YouTube channel as private?`)) return;
+  try { await api("/api/upload", {folders: [...picked], settings: readSettings()}); show("new"); pollJobs(); }
+  catch (e) { $("#upErr").textContent = e.message; }
+};
+
+// ---- calendar
+async function loadCalendar(){
+  const r = await api("/api/calendar");
+  const days = Object.entries(r.days);
+  $("#days").innerHTML = days.length ? days.map(([d, posts]) => {
+    const date = new Date(d + "T12:00");
+    return `<div class="day"><div class="date ${d === r.today ? "today" : ""}">${d === r.today ? "Today" : date.toLocaleDateString([], {weekday:"short", month:"short", day:"numeric"})}</div><div>
+      ${posts.map(p => `<div class="post"><span class="t">${esc(p.time)}</span><span class="where">${esc(p.where)}</span>
+        <span>${p.url ? `<a href="${esc(p.url)}" target="_blank">${esc(p.title)}</a>` : esc(p.title)}</span>
+        ${p.views ? `<span class="muted small">${esc(p.views)} views</span>` : ""}
+        ${p.needs_studio ? `<span class="warn">Set in Studio</span>` : ""}</div>`).join("")}</div></div>`;
+  }).join("") : `<div class="empty">Nothing scheduled.</div>`;
+}
+
+let start = "new";
+try { start = localStorage.getItem("tab") || "new"; } catch {}
+show(start);
+pollJobs();
+loadFolders();
+</script>
+</body>
+</html>

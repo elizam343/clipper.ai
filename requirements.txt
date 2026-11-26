@@ -7,3 +7,6 @@ brotli>=1.2  # older Brotli crashes the Anthropic SDK when it reads compressed r
 pillow  # burned-in captions, title card
 google-api-python-client  # optional: upload.py
 google-auth-oauthlib      # optional: upload.py
+# Clipper.app (optional)
+flask
+pywebview
