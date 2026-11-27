@@ -76,7 +76,7 @@ def claude_lines(clips, meta: dict):
         "- line: " + clipper.TIKTOK_LINE_RULES + ". Base it on what happens in the transcript\n"
         "- hashtags: " + clipper.TIKTOK_TAG_RULES + "\n"
         "No profanity or swear words (even censored) and no sexual references. "
-        "Don't invent events.\n\n" + json.dumps(items))
+        + clipper.RESTRICTED_WORDS_RULE + " Don't invent events.\n\n" + json.dumps(items))
     schema = {"type": "object", "properties": {"captions": {"type": "array", "items": {
         "type": "object",
         "properties": {"id": {"type": "integer"}, "line": {"type": "string"},

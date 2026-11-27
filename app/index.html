@@ -90,7 +90,7 @@ a{color:var(--brand);text-decoration:none}a:hover{text-decoration:underline}
     <div class="card">
       <h2>Make clips from a video</h2>
       <div class="row">
-        <input type="url" id="url" placeholder="Paste a YouTube link…" autocomplete="off">
+        <input type="url" id="url" placeholder="Paste a YouTube or Twitch link…" autocomplete="off">
         <select id="format" title="Where is the funny part?">
           <option value="landscape">Landscape (gameplay, several people)</option>
           <option value="portrait">Portrait (one person / face)</option>
@@ -98,8 +98,13 @@ a{color:var(--brand);text-decoration:none}a:hover{text-decoration:underline}
         </select>
         <button class="primary" id="go">Make clips</button>
       </div>
+      <div class="row small" style="margin-top:10px">
+        <span class="muted">Only part of a long stream (optional):</span>
+        <label>From <input type="text" id="from" placeholder="1:30:00" size="8" autocomplete="off"></label>
+        <label>To <input type="text" id="to" placeholder="3:00:00" size="8" autocomplete="off"></label>
+      </div>
       <div class="err" id="newErr"></div>
-      <p class="muted small">Takes a few minutes. You'll get a notification when the clips are ready to review. Only clip videos you have the rights to use.</p>
+      <p class="muted small">Only that part is downloaded, which saves a lot of time on streams that run for hours. Takes a few minutes. You'll get a notification when the clips are ready to review. Only clip videos you have the rights to use.</p>
     </div>
     <div class="card">
       <h2>Activity</h2>
@@ -159,8 +164,9 @@ function show(tab){
 $("#go").onclick = async () => {
   $("#newErr").textContent = "";
   try {
-    await api("/api/jobs", {url: $("#url").value, format: $("#format").value});
-    $("#url").value = ""; pollJobs();
+    await api("/api/jobs", {url: $("#url").value, format: $("#format").value,
+                            start: $("#from").value, end: $("#to").value});
+    $("#url").value = $("#from").value = $("#to").value = ""; pollJobs();
   } catch (e) { $("#newErr").textContent = e.message; }
 };
 $("#url").addEventListener("keydown", e => { if (e.key === "Enter") $("#go").click(); });

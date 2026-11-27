@@ -7,7 +7,7 @@ OpenShorts and stream-clipper.
 | | ClipsAI | clipper |
 |---|---|---|
 | How moments are picked | Cuts at every topic change (no ranking) | Ranks moments: **chat spikes** + loudness spikes against the local baseline, build-up → peak → payoff, hook, dead-air penalty; optional Claude re-rank |
-| Chat replays | No | YouTube live chat (auto-fetched), Twitch, text logs |
+| Chat replays | No | YouTube live chat and Twitch VOD chat (both auto-fetched), text logs |
 | Works on streams / IRL / gaming | Weak (transcript only) | Yes |
 | Clip length / count | Not configurable | Each clip as long as its moment (15–90 s by default, `--min`/`--max`); as many clips as are good enough (2–10 by default), or `-n` for an exact number |
 | Long videos | Transcribes everything | Scores the whole video first, transcribes only the candidate clips |
@@ -37,14 +37,20 @@ python clipper.py "https://www.youtube.com/watch?v=..." -o clips --min 20 --max 
 # exactly 8 clips instead of the automatic count
 python clipper.py stream.mp4 -n 8
 
-# a Twitch VOD with chat exported by TwitchDownloader
+# a Twitch VOD (or clip) link; chat is fetched too when TwitchDownloaderCLI is installed
+python clipper.py "https://www.twitch.tv/videos/..." --format landscape
+
+# only part of a long stream: just that part is downloaded
+python clipper.py "https://www.twitch.tv/videos/..." --start 1:30:00 --end 3:00:00
+
+# a Twitch VOD you saved yourself, with chat exported by TwitchDownloader
 python clipper.py vod.mp4 --chat vod_chat.json
 
 # fastest: no transcription
 python clipper.py stream.mp4 --no-transcribe
 
-# only look at part of a long VOD (seconds)
-python clipper.py vod.mp4 --start 3600 --end 7200
+# only look at part of a long VOD (seconds or h:mm:ss)
+python clipper.py vod.mp4 --start 3600 --end 2:00:00
 
 # force a layout
 python clipper.py gameplay.mp4 --layout screen
@@ -236,6 +242,22 @@ Setup (once):
    app is in Sandbox.
 5. To post publicly, apply for the Content Posting API audit in the developer portal.
 
+### Twitch
+
+Twitch VOD and clip links work like YouTube links. Streams run for hours, so:
+
+- `--start` / `--end` (seconds, `1:30:00` or `1h30m`) download only that part. Times in
+  `clips.json` count from the cut; the posting log's `source_at` is the time in the full
+  stream.
+- Landscape-only runs download 720p, which looks the same once the frame is shrunk into
+  the Short and is about half the size (a 10-hour stream is still 15+ GB). Downloads are
+  kept in `clips/.work` for re-runs; delete what's there when you need the space.
+- Stream titles lose their chat commands and promos (`!merch`, `- 10% off with code`).
+- Captions credit the streamer "on Twitch", and the Twitch category (the game) is used
+  for tags.
+- VODs expire after 7–60 days depending on the channel, and subscriber-only VODs can't
+  be downloaded.
+
 ### Chat
 
 Chat spikes are the strongest signal for streams. When chat explodes, something
@@ -243,8 +265,11 @@ happened. clipper reads:
 
 - **YouTube** `*.live_chat.json`. It's downloaded automatically for YouTube URLs,
   or fetch it yourself with `yt-dlp --skip-download --write-subs --sub-langs live_chat URL`.
-- **Twitch** JSON from [TwitchDownloader](https://github.com/lay295/TwitchDownloader)
-  (`TwitchDownloaderCLI chatdownload --id VOD_ID -o chat.json`).
+- **Twitch** JSON from [TwitchDownloader](https://github.com/lay295/TwitchDownloader).
+  For Twitch VOD links it's fetched automatically when `TwitchDownloaderCLI` is on your
+  PATH (download it from the project's Releases page and put it in `/usr/local/bin`);
+  without it, Twitch VODs are clipped from audio only. By hand:
+  `TwitchDownloaderCLI chatdownload --id VOD_ID -o chat.json`.
 - **chat-downloader** JSON, or plain text lines like `[1:02:03] user: message`.
 
 For a local video, a chat file saved next to it is used automatically

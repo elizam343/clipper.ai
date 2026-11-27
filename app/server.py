@@ -182,6 +182,12 @@ def new_job():
     args = [sys.executable, str(ROOT / "clipper.py"), url, "--format", fmt]
     if d.get("count"):
         args += ["-n", str(int(d["count"]))]
+    for key in ("start", "end"):   # times like 1:30:00, 5400 or 1h30m
+        t = str(d.get(key) or "").strip()
+        if t:
+            if not re.fullmatch(r"[0-9:hms. ]{1,12}", t):
+                return jsonify(error=f"'{t}' isn't a time. Use 1:30:00 or 90:00"), 400
+            args += [f"--{key}", t]
 
     def done(job, code):
         if code == 0:
