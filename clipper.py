@@ -684,7 +684,7 @@ def tiktok_credit(meta: dict) -> str:
 # Violent words in a title or caption get a Short shown to fewer people, even in a game
 RESTRICTED_WORDS_RULE = (
     "Also keep violent and sensitive words out of the title, hook, caption, hashtags and "
-    "TikTok line, even when it's only a game: kill, killed, murder, dead, die, shoot, gun, "
+    "TikTok line, even when it's only a game: kill, killed, murder, dead, die, shoot, gun, bomb, "
     "blood, suicide and the like. Platforms limit how far those posts reach. Say it another "
     "way (\"took him out\", \"I didn't do it\", \"wiped\").")
 
