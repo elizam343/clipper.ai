@@ -681,6 +681,13 @@ def tiktok_credit(meta: dict) -> str:
     return f"🎥 Full video: {who}{' on ' + plat if plat else ''}" if who else ""
 
 
+# Violent words in a title or caption get a Short shown to fewer people, even in a game
+RESTRICTED_WORDS_RULE = (
+    "Also keep violent and sensitive words out of the title, hook, caption, hashtags and "
+    "TikTok line, even when it's only a game: kill, killed, murder, dead, die, shoot, gun, "
+    "blood, suicide and the like. Platforms limit how far those posts reach. Say it another "
+    "way (\"took him out\", \"I didn't do it\", \"wiped\").")
+
 # TikTok shows about 2 lines of a caption before "more", so keep it short
 TIKTOK_LINE_MAX = 60
 TIKTOK_TAGS = 3
@@ -925,6 +932,7 @@ def claude_captions(clips, meta: dict):
         "when the transcript swears and even censored (no f***, sh*t, wtf); YouTube pushes "
         "Shorts that swear in the title or description to fewer people. Avoid sexual "
         "references too. Don't quote a line that swears; describe it instead.\n"
+        + RESTRICTED_WORDS_RULE + "\n"
         "Don't invent events that aren't in the transcript.\n\n" + json.dumps(items))
     schema = {
         "type": "object",
